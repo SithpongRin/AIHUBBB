@@ -41,9 +41,6 @@ class ProviderKeyStore {
   }
 
   public getKey(provider: ProviderId): string {
-    if (provider === 'mock') {
-      return 'mock-local-key';
-    }
     if (this.memoryKeys.has(provider)) {
       return this.memoryKeys.get(provider) || '';
     }

@@ -1056,32 +1056,36 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
                     );
                   }
 
-                  // AI Assistant Message (Left-aligned)
                   const isGemini = msg.provider === 'gemini';
                   const isOpenAI = msg.provider === 'openai';
                   const isClaude = msg.provider === 'claude';
                   const isDeepSeek = msg.provider === 'deepseek';
                   const isGroq = msg.provider === 'groq';
+                  const isMock = msg.provider === 'mock';
 
                   const pName =
                     isOpenAI ? 'OpenAI' :
                     isGemini ? 'Google Gemini' :
                     isClaude ? 'Anthropic Claude' :
-                    isDeepSeek ? 'DeepSeek' : 'Groq';
+                    isDeepSeek ? 'DeepSeek' :
+                    isGroq ? 'Groq' :
+                    isMock ? 'Mock Engine (Simulation)' : 'AI Assistant';
 
                   const avatarBg =
                     isOpenAI ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' :
                     isGemini ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20' :
                     isClaude ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20' :
                     isDeepSeek ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20' :
-                    'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20';
+                    isGroq ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20' :
+                    'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border-zinc-500/20';
 
                   const borderAccent =
                     isOpenAI ? 'border-emerald-500/20 dark:border-emerald-500/15' :
                     isGemini ? 'border-blue-500/20 dark:border-blue-500/15' :
                     isClaude ? 'border-amber-500/20 dark:border-amber-500/15' :
                     isDeepSeek ? 'border-purple-500/20 dark:border-purple-500/15' :
-                    'border-orange-500/20 dark:border-orange-500/15';
+                    isGroq ? 'border-orange-500/20 dark:border-orange-500/15' :
+                    'border-zinc-500/20 dark:border-zinc-500/15';
 
                   return (
                     <div key={msg.id} className="flex items-start gap-3 sm:gap-4 animate-fadeIn">
@@ -1091,6 +1095,7 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
                         {isClaude && <ShieldCheck className="w-4 h-4" />}
                         {isDeepSeek && <Cpu className="w-4 h-4" />}
                         {isGroq && <Zap className="w-4 h-4" />}
+                        {isMock && <Sliders className="w-4 h-4" />}
                       </div>
 
                       <div className="flex-1 min-w-0 space-y-2">

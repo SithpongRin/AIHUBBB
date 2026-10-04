@@ -35,17 +35,20 @@ export class MockProvider implements AIProvider {
       }
     });
 
+    const rawQuery = (userPrompt || '').trim();
+    const queryExcerpt = rawQuery ? (rawQuery.length > 80 ? rawQuery.slice(0, 80) + '...' : rawQuery) : 'the inquiry';
+
     let mockText = '';
     if (role === 'analysis') {
-      mockText = `### Independent Analysis (Simulated by Mock ${model})\n\n**Core Assessment:**\nBased on first principles, the user's objective requires a structured balance between performance, reliability, and maintainability.\n\n1. **Key Requirement Analysis:** The request addresses system architecture and multi-model coordination.\n2. **Recommended Paradigm:** Adopt an asynchronous pipeline with localized fallback queues.\n3. **Identified Risk:** Unchecked parallel requests can trigger rate limits on downstream APIs.`;
+      mockText = `### Independent Analysis (Simulated by Mock ${model})\n\n**Topic:** "${queryExcerpt}"\n\n1. **Status:** Offline simulated analysis.\n2. **Perspective:** Analysis simulation for "${queryExcerpt}".\n3. **Notice:** Connect a live AI provider (such as Groq, Google Gemini, OpenAI) in Settings to receive live model responses.`;
     } else if (role === 'review') {
-      mockText = `### Cross-Review & Critique (Simulated by Mock ${model})\n\n**Evaluation of Peer Positions:**\n- **Agreement:** Peer models correctly emphasize rate limit management.\n- **Disagreement:** Proposing synchronous blocking calls across rounds adds unnecessary latency.\n- **Recommended Refinement:** Implement exponential backoff with jitter and per-provider serialization queues.`;
+      mockText = `### Critique & Cross-Review (Simulated by Mock ${model})\n\n**Topic:** "${queryExcerpt}"\n\n- Validated pipeline execution in offline test mode.\n- To analyze this query with real AI, configure API keys in Settings.`;
     } else if (role === 'debate') {
-      mockText = `### Final Debate & Stance (Simulated by Mock ${model})\n\n**Definitive Position:**\nThe optimal solution is a resilient per-provider request queue combined with dynamic model discovery. This resolves quota starvation without sacrificing multi-agent parallelism.`;
+      mockText = `### Deliberation Stance (Simulated by Mock ${model})\n\n**Topic:** "${queryExcerpt}"\n\nSimulation confirmed. Live models are ready once keys are added in Settings.`;
     } else if (role === 'final') {
-      mockText = `## Final Synthesized Answer\n\n### Direct Answer\nThe Council recommends implementing per-provider serialization queues paired with dynamic model discovery and exponential backoff retry.\n\n### Key Reasoning\nThis architecture directly addresses the root causes of quota exhaustion while maintaining sub-second multi-model throughput.\n\n### Points of Agreement\nAll models agreed that hardcoded model names must be replaced with runtime discovery.\n\n### Important Disagreements\nDebate centered on parallel vs. sequential round execution; resolved by adopting per-provider isolation.\n\n### Best Conclusion\nAdopt dynamic model discovery with per-provider rate-limit spacing.\n\n### Practical Recommendation\n1. Use dynamic \`listModels\`.\n2. Wrap provider calls in \`withRetry\`.\n3. Space consecutive requests by 1.5s.\n\n### Remaining Uncertainty\nFree-tier quotas vary by region and account age.`;
+      mockText = `## Synthesized Answer (Simulation Mode)\n\n### Response to: "${queryExcerpt}"\n\nThis is an offline simulation confirming your deliberation pipeline is functioning.\n\n> **Notice:** To receive real AI intelligence for "${queryExcerpt}", please open **Settings** (⚙️) and enter an API key (e.g. Groq, Google Gemini, OpenAI).`;
     } else {
-      mockText = `Mock response to: ${userPrompt.slice(0, 100)}...`;
+      mockText = `[Simulated response to: ${queryExcerpt}]`;
     }
 
     return {
