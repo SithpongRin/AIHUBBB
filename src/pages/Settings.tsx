@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   KeyRound,
   Shield,
@@ -15,6 +15,8 @@ import {
   Copy,
   Check,
   RefreshCw,
+  Cpu,
+  Zap,
 } from 'lucide-react';
 import { ProviderId, UserProfile, UserSettings } from '@/types';
 import { AVAILABLE_MODELS, providerKeyStore } from '@/services/providers/keyStore';
@@ -40,24 +42,32 @@ export const SettingsView: React.FC<SettingsProps> = ({
     openai: providerKeyStore.getKey('openai'),
     gemini: providerKeyStore.getKey('gemini'),
     claude: providerKeyStore.getKey('claude'),
+    deepseek: providerKeyStore.getKey('deepseek'),
+    groq: providerKeyStore.getKey('groq'),
   });
 
   const [models, setModels] = useState<Record<ProviderId, string>>({
     openai: providerKeyStore.getModel('openai'),
     gemini: providerKeyStore.getModel('gemini'),
     claude: providerKeyStore.getModel('claude'),
+    deepseek: providerKeyStore.getModel('deepseek'),
+    groq: providerKeyStore.getModel('groq'),
   });
 
   const [enabled, setEnabled] = useState<Record<ProviderId, boolean>>({
     openai: providerKeyStore.isEnabled('openai'),
     gemini: providerKeyStore.isEnabled('gemini'),
     claude: providerKeyStore.isEnabled('claude'),
+    deepseek: providerKeyStore.isEnabled('deepseek'),
+    groq: providerKeyStore.isEnabled('groq'),
   });
 
   const [showKey, setShowKey] = useState<Record<ProviderId, boolean>>({
     openai: false,
     gemini: false,
     claude: false,
+    deepseek: false,
+    groq: false,
   });
 
   const [testStatus, setTestStatus] = useState<
@@ -66,6 +76,19 @@ export const SettingsView: React.FC<SettingsProps> = ({
     openai: { state: 'idle' },
     gemini: { state: 'idle' },
     claude: { state: 'idle' },
+    deepseek: { state: 'idle' },
+    groq: { state: 'idle' },
+  });
+
+  // Dynamically fetched models from API keys
+  const [dynamicModels, setDynamicModels] = useState<
+    Record<ProviderId, { id: string; name: string; description: string }[]>
+  >({
+    openai: AVAILABLE_MODELS.openai,
+    gemini: AVAILABLE_MODELS.gemini,
+    claude: AVAILABLE_MODELS.claude,
+    deepseek: AVAILABLE_MODELS.deepseek,
+    groq: AVAILABLE_MODELS.groq,
   });
 
   // General settings
@@ -74,10 +97,48 @@ export const SettingsView: React.FC<SettingsProps> = ({
   const [savedNotice, setSavedNotice] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
 
+  // Auto-fetch real models from Gemini key on load if key exists
+  useEffect(() => {
+    const geminiKey = keys.gemini;
+    if (geminiKey) {
+      const p = providerRegistry.get('gemini');
+      if (p && 'fetchAvailableModels' in p && typeof (p as any).fetchAvailableModels === 'function') {
+        (p as any).fetchAvailableModels(geminiKey).then((fetched: { id: string; name: string; description: string }[]) => {
+          if (Array.isArray(fetched) && fetched.length > 0) {
+            setDynamicModels((prev) => ({ ...prev, gemini: fetched }));
+            const current = models.gemini;
+            if (!fetched.some((m) => m.id === current)) {
+              const best = fetched.find((m) => m.id.includes('3.8')) || fetched[0];
+              if (best) {
+                handleModelChange('gemini', best.id);
+              }
+            }
+          }
+        });
+      }
+    }
+  }, []);
+
   const handleKeyChange = (provider: ProviderId, value: string) => {
     setKeys((prev) => ({ ...prev, [provider]: value }));
     providerKeyStore.setKey(provider, value);
     setTestStatus((prev) => ({ ...prev, [provider]: { state: 'idle' } }));
+
+    // When Gemini key changes, dynamically fetch models for the new key
+    if (provider === 'gemini' && value.trim()) {
+      const p = providerRegistry.get('gemini');
+      if (p && 'fetchAvailableModels' in p && typeof (p as any).fetchAvailableModels === 'function') {
+        (p as any).fetchAvailableModels(value.trim()).then((fetched: { id: string; name: string; description: string }[]) => {
+          if (Array.isArray(fetched) && fetched.length > 0) {
+            setDynamicModels((prev) => ({ ...prev, gemini: fetched }));
+            const best = fetched.find((m) => m.id.includes('3.8')) || fetched[0];
+            if (best) {
+              handleModelChange('gemini', best.id);
+            }
+          }
+        });
+      }
+    }
   };
 
   const handleModelChange = (provider: ProviderId, model: string) => {
@@ -113,6 +174,18 @@ export const SettingsView: React.FC<SettingsProps> = ({
       const pInstance = providerRegistry.get(provider);
       const res = await pInstance.validateConnection(key, models[provider]);
       if (res.success) {
+        // If models were returned from the API key, update the dropdown!
+        if ('models' in res && Array.isArray((res as any).models) && (res as any).models.length > 0) {
+          const fetched = (res as any).models;
+          setDynamicModels((prev) => ({ ...prev, [provider]: fetched }));
+          const current = models[provider];
+          if (!fetched.some((m: { id: string }) => m.id === current)) {
+            const best = fetched.find((m: { id: string }) => m.id.includes('3.8')) || fetched[0];
+            if (best) {
+              handleModelChange(provider, best.id);
+            }
+          }
+        }
         setTestStatus((prev) => ({
           ...prev,
           [provider]: { state: 'success', message: 'Connection successful' },
@@ -431,19 +504,28 @@ CREATE TABLE IF NOT EXISTS public.files (
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Model
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                      Model
+                    </label>
+                    {dynamicModels.gemini && dynamicModels.gemini.length > 0 && (
+                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                        Synced from API key
+                      </span>
+                    )}
+                  </div>
                   <select
                     value={models.gemini}
                     onChange={(e) => handleModelChange('gemini', e.target.value)}
                     className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
-                    {AVAILABLE_MODELS.gemini.map((m: { id: string; name: string; description: string }) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} — {m.description}
-                      </option>
-                    ))}
+                    {(dynamicModels.gemini?.length > 0 ? dynamicModels.gemini : AVAILABLE_MODELS.gemini).map(
+                      (m: { id: string; name: string; description: string }) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} — {m.description}
+                        </option>
+                      )
+                    )}
                   </select>
                 </div>
               </div>
@@ -592,6 +674,222 @@ CREATE TABLE IF NOT EXISTS public.files (
                   <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
                     <XCircle className="w-3.5 h-3.5" />
                     <span>{testStatus.claude.message || 'Connection failed'}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* 4. DeepSeek */}
+            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center">
+                    <Cpu className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">DeepSeek</h3>
+                    <p className="text-[11px] text-zinc-400">Deep Reasoning & Coding (DeepSeek-V3 / R1)</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={enabled.deepseek}
+                      onChange={() => handleToggleEnabled('deepseek')}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
+                    />
+                    <span>Enabled</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                    DeepSeek API Key
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showKey.deepseek ? 'text' : 'password'}
+                      value={keys.deepseek}
+                      onChange={(e) => handleKeyChange('deepseek', e.target.value)}
+                      placeholder="sk-..."
+                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey((prev) => ({ ...prev, deepseek: !prev.deepseek }))}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                    >
+                      {showKey.deepseek ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                    Model
+                  </label>
+                  <select
+                    value={models.deepseek}
+                    onChange={(e) => handleModelChange('deepseek', e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {AVAILABLE_MODELS.deepseek.map((m: { id: string; name: string; description: string }) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} — {m.description}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleTestConnection('deepseek')}
+                    disabled={testStatus.deepseek.state === 'testing'}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {testStatus.deepseek.state === 'testing' ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3" />
+                    )}
+                    <span>Test Connection</span>
+                  </button>
+
+                  {keys.deepseek && (
+                    <button
+                      onClick={() => handleClearKey('deepseek')}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                    >
+                      Clear Key
+                    </button>
+                  )}
+                </div>
+
+                {testStatus.deepseek.state === 'success' && (
+                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Connection successful</span>
+                  </span>
+                )}
+
+                {testStatus.deepseek.state === 'error' && (
+                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                    <XCircle className="w-3.5 h-3.5" />
+                    <span>{testStatus.deepseek.message || 'Connection failed'}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* 5. Groq */}
+            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-orange-500/10 text-orange-600 flex items-center justify-center">
+                    <Zap className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">Groq</h3>
+                    <p className="text-[11px] text-zinc-400">Ultra-Fast LPU Inference (Llama 3.3 70B & 8B)</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={enabled.groq}
+                      onChange={() => handleToggleEnabled('groq')}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
+                    />
+                    <span>Enabled</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                    Groq API Key
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showKey.groq ? 'text' : 'password'}
+                      value={keys.groq}
+                      onChange={(e) => handleKeyChange('groq', e.target.value)}
+                      placeholder="gsk_..."
+                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey((prev) => ({ ...prev, groq: !prev.groq }))}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                    >
+                      {showKey.groq ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                    Model
+                  </label>
+                  <select
+                    value={models.groq}
+                    onChange={(e) => handleModelChange('groq', e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {AVAILABLE_MODELS.groq.map((m: { id: string; name: string; description: string }) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} — {m.description}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleTestConnection('groq')}
+                    disabled={testStatus.groq.state === 'testing'}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    {testStatus.groq.state === 'testing' ? (
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3" />
+                    )}
+                    <span>Test Connection</span>
+                  </button>
+
+                  {keys.groq && (
+                    <button
+                      onClick={() => handleClearKey('groq')}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                    >
+                      Clear Key
+                    </button>
+                  )}
+                </div>
+
+                {testStatus.groq.state === 'success' && (
+                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Connection successful</span>
+                  </span>
+                )}
+
+                {testStatus.groq.state === 'error' && (
+                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
+                    <XCircle className="w-3.5 h-3.5" />
+                    <span>{testStatus.groq.message || 'Connection failed'}</span>
                   </span>
                 )}
               </div>

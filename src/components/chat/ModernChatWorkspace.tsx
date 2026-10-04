@@ -32,17 +32,19 @@ import {
   Trash2,
   AtSign,
   Info,
+  Cpu,
+  Zap,
 } from 'lucide-react';
 
 const MENTION_OPTIONS = [
   {
     id: 'all',
     tag: '@all',
-    name: 'AI Council (All Models)',
+    name: 'AI Council (All Configured Models)',
     role: 'Multi-AI Deliberation',
     icon: BrainCircuit,
     color: 'text-indigo-600 dark:text-indigo-400',
-    description: 'Runs structured multi-round debate across OpenAI, Gemini & Claude to synthesize consensus.',
+    description: 'Runs structured debate across all your configured AI models to synthesize consensus.',
     strengths: ['Multi-perspective synthesis', 'Eliminates model bias', 'Finds optimal trade-offs'],
   },
   {
@@ -74,6 +76,26 @@ const MENTION_OPTIONS = [
     color: 'text-amber-600 dark:text-amber-400',
     description: 'Deep code auditing, identifying subtle edge-case failure modes, security vulnerabilities, nuanced reasoning.',
     strengths: ['Security vulnerability audits', 'Edge-case bug detection', 'High-precision prose'],
+  },
+  {
+    id: 'deepseek',
+    tag: '@deepseek',
+    name: 'DeepSeek (V3 / R1)',
+    role: 'Deep Reasoning & Code',
+    icon: Cpu,
+    color: 'text-purple-600 dark:text-purple-400',
+    description: 'Advanced mathematical logic, code architecture, and chain-of-thought problem solving.',
+    strengths: ['Algorithmic reasoning', 'Code optimization', 'Math & Logic'],
+  },
+  {
+    id: 'groq',
+    tag: '@groq',
+    name: 'Groq (Llama 3.3 70B)',
+    role: 'Ultra-Fast Inference',
+    icon: Zap,
+    color: 'text-orange-600 dark:text-orange-400',
+    description: 'Blazing fast inference on LPU chips with Meta Llama 3.3 70B & 8B.',
+    strengths: ['Sub-second latency', 'High throughput', 'Concise synthesis'],
   },
 ];
 import {
@@ -119,16 +141,23 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
   const [currentDiscussion, setCurrentDiscussion] = useState<Discussion | null>(null);
   const [messages, setMessages] = useState<DiscussionMessage[]>([]);
   const [status, setStatus] = useState<DiscussionStatus>('pending');
-  const [activeViewMode, setActiveViewMode] = useState<'verdict' | 'models' | 'rounds'>('verdict');
+  const [activeViewMode, setActiveViewMode] = useState<'chat' | 'consensus'>('chat');
   const [selectedPerspective, setSelectedPerspective] = useState<ProviderId>('openai');
 
   // Input bar state
   const [inputPrompt, setInputPrompt] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<DiscussionFile[]>([]);
   const [uploadingFile, setUploadingFile] = useState(false);
-  const [rounds, setRounds] = useState<number>(3);
-  const [participants, setParticipants] = useState<ProviderId[]>(['openai', 'gemini', 'claude']);
-  const [moderator, setModerator] = useState<ProviderId>('openai');
+  const [configuredProviders, setConfiguredProviders] = useState<ProviderId[]>(() => providerKeyStore.getConfiguredProviders());
+  const [rounds, setRounds] = useState<number>(1);
+  const [participants, setParticipants] = useState<ProviderId[]>(() => {
+    const list = providerKeyStore.getConfiguredProviders();
+    return list.length > 0 ? list : ['gemini'];
+  });
+  const [moderator, setModerator] = useState<ProviderId>(() => {
+    const list = providerKeyStore.getConfiguredProviders();
+    return list[0] || 'gemini';
+  });
   const [showConfigPopover, setShowConfigPopover] = useState(false);
   const [showMentionMenu, setShowMentionMenu] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
@@ -140,6 +169,7 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const orchestratorRef = useRef<DiscussionOrchestrator | null>(null);
+  const isRunningRef = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -178,26 +208,44 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
       if (!mounted || !disc) return;
       setCurrentDiscussion(disc);
       setStatus(disc.status);
-      setMessages(disc.messages || []);
-      setRounds(disc.rounds || 3);
-      setParticipants(disc.participants || ['openai', 'gemini', 'claude']);
 
-      // If pending and newly created, kick off orchestrator
-      if (disc.status === 'pending') {
-        startOrchestration(disc);
+      const existingMessages = disc.messages || [];
+      // Ensure initial question is represented as a user message if created before
+      if (disc.question && !existingMessages.some((m) => m.role === 'user')) {
+        const initialUserMsg: DiscussionMessage = {
+          id: `${disc.id}-initial-user`,
+          discussion_id: disc.id,
+          round_number: 1,
+          provider: 'user',
+          model: 'User',
+          role: 'user',
+          content: disc.question,
+          status: 'completed',
+          created_at: disc.created_at,
+        };
+        setMessages([initialUserMsg, ...existingMessages]);
+      } else {
+        setMessages(existingMessages);
       }
+
+      setRounds(disc.rounds || 1);
+      setParticipants(disc.participants || ['gemini']);
     });
 
     return () => {
       mounted = false;
       if (orchestratorRef.current) {
         orchestratorRef.current.stop();
+        isRunningRef.current = false;
       }
     };
   }, [activeDiscussionId]);
 
-  // Run Multi-AI Orchestrator
-  const startOrchestration = (disc: Discussion) => {
+  // Run Multi-AI Orchestrator with full conversation history
+  const startOrchestration = (disc: Discussion, historySnapshot?: DiscussionMessage[]) => {
+    if (isRunningRef.current) return;
+    isRunningRef.current = true;
+
     const orchestrator = new DiscussionOrchestrator();
     orchestratorRef.current = orchestrator;
 
@@ -205,9 +253,10 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
       discussionId: disc.id,
       question: disc.question,
       participants: disc.participants,
-      rounds: disc.rounds,
+      rounds: 1, // Normal chat mode is strictly 1 round per turn
       moderator: disc.moderator,
       files: disc.files,
+      history: historySnapshot || messages,
       onMessageUpdate: (updatedMsg: DiscussionMessage) => {
         setMessages((prev) => {
           const idx = prev.findIndex((m) => m.id === updatedMsg.id);
@@ -222,6 +271,9 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
       },
       onStatusChange: (newStatus: DiscussionStatus) => {
         setStatus(newStatus);
+        if (newStatus !== 'running') {
+          isRunningRef.current = false;
+        }
         discussionService.updateDiscussionStatus(disc.id, newStatus);
         loadHistory();
       },
@@ -230,6 +282,7 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
 
   // Stop deliberation
   const handleStop = () => {
+    isRunningRef.current = false;
     if (orchestratorRef.current) {
       orchestratorRef.current.stop();
       setStatus('cancelled');
@@ -247,22 +300,52 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
     setErrorMsg(null);
     setShowMentionMenu(false);
 
+    const configured = providerKeyStore.getConfiguredProviders();
+    if (configured.length === 0) {
+      setErrorMsg('No API key configured. Please enter your API key (e.g. Gemini, OpenAI, Claude) in Settings to get responses.');
+      onOpenSettings();
+      return;
+    }
+
     // Dynamic mention detection
     let effectiveParticipants = participants;
     let effectiveRounds = rounds;
 
     if (textToSend.includes('@claude') && !textToSend.includes('@openai') && !textToSend.includes('@gemini') && !textToSend.includes('@all')) {
+      if (!configured.includes('claude')) {
+        setErrorMsg('Claude API key is not configured. Please open Settings and enter your Anthropic API key.');
+        onOpenSettings();
+        return;
+      }
       effectiveParticipants = ['claude'];
       effectiveRounds = 1;
     } else if (textToSend.includes('@openai') && !textToSend.includes('@claude') && !textToSend.includes('@gemini') && !textToSend.includes('@all')) {
+      if (!configured.includes('openai')) {
+        setErrorMsg('OpenAI API key is not configured. Please open Settings and enter your OpenAI API key.');
+        onOpenSettings();
+        return;
+      }
       effectiveParticipants = ['openai'];
       effectiveRounds = 1;
     } else if (textToSend.includes('@gemini') && !textToSend.includes('@claude') && !textToSend.includes('@openai') && !textToSend.includes('@all')) {
+      if (!configured.includes('gemini')) {
+        setErrorMsg('Gemini API key is not configured. Please open Settings and enter your Gemini API key.');
+        onOpenSettings();
+        return;
+      }
       effectiveParticipants = ['gemini'];
       effectiveRounds = 1;
     } else if (textToSend.includes('@all')) {
-      effectiveParticipants = ['openai', 'gemini', 'claude'];
-      effectiveRounds = Math.max(rounds, 2);
+      effectiveParticipants = configured;
+      effectiveRounds = 1;
+    } else {
+      // Default deliberation: only use providers that are configured with keys!
+      const available = effectiveParticipants.filter((p) => configured.includes(p));
+      if (available.length > 0) {
+        effectiveParticipants = available;
+      } else {
+        effectiveParticipants = configured;
+      }
     }
 
     // If starting a fresh discussion
@@ -287,34 +370,61 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
           newDisc.files = [...attachedFiles];
         }
 
+        const userMsg: DiscussionMessage = {
+          id: `${newDisc.id}-user-${Date.now()}`,
+          discussion_id: newDisc.id,
+          round_number: 1,
+          provider: 'user',
+          model: 'User',
+          role: 'user',
+          content: textToSend,
+          status: 'completed',
+          created_at: new Date().toISOString(),
+        };
+        await discussionService.saveMessage(userMsg);
+
         setInputPrompt('');
         setAttachedFiles([]);
         onSelectDiscussion(newDisc.id);
         setCurrentDiscussion(newDisc);
         setStatus('running');
-        setMessages([]);
+        setMessages([userMsg]);
         await loadHistory();
-        startOrchestration(newDisc);
+        startOrchestration(newDisc, [userMsg]);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : 'Failed to start deliberation';
         setErrorMsg(msg);
       }
     } else {
-      // Follow-up question in existing discussion
-      const followUpPrompt = `${currentDiscussion.question}\n\n---\n**Follow-up Question from User:**\n${textToSend}`;
+      // Follow-up message in existing discussion!
+      const userMsg: DiscussionMessage = {
+        id: `${currentDiscussion.id}-user-${Date.now()}`,
+        discussion_id: currentDiscussion.id,
+        round_number: 1,
+        provider: 'user',
+        model: 'User',
+        role: 'user',
+        content: textToSend,
+        status: 'completed',
+        created_at: new Date().toISOString(),
+      };
+      await discussionService.saveMessage(userMsg);
+
+      const updatedHistory = [...messages, userMsg];
+      setMessages(updatedHistory);
       setInputPrompt('');
       setStatus('running');
 
       const updatedDisc: Discussion = {
         ...currentDiscussion,
-        question: followUpPrompt,
+        question: textToSend,
         participants: effectiveParticipants,
         status: 'running',
-        rounds: Math.min(effectiveRounds, 2), // Efficient follow-up round
+        rounds: 1,
       };
 
       setCurrentDiscussion(updatedDisc);
-      startOrchestration(updatedDisc);
+      startOrchestration(updatedDisc, updatedHistory);
     }
   };
 
@@ -478,7 +588,10 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
     else olderDiscussions.push(disc);
   });
 
-  const finalMessage = messages.find((m) => m.role === 'final');
+  const finalMessage =
+    messages.find((m) => m.role === 'final') ||
+    messages.find((m) => m.status === 'completed' && Boolean(m.content)) ||
+    messages.find((m) => m.status === 'failed' && Boolean(m.content));
   const r1Messages = messages.filter((m) => m.round_number === 1 && m.role === 'analysis');
   const r2Messages = messages.filter((m) => m.round_number === 2 && m.role === 'review');
   const r3Messages = messages.filter((m) => m.round_number === 3 && m.role === 'debate');
@@ -750,21 +863,30 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
 
           {/* Right Header: Models Indicator & Controls */}
           <div className="flex items-center gap-2">
-            <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[11px]">
-              <span className="flex items-center gap-1 font-medium text-emerald-700 dark:text-emerald-300">
-                <Brain className="w-3 h-3 text-emerald-600" />
-                <span>OpenAI</span>
-              </span>
-              <span className="text-zinc-300 dark:text-zinc-700">+</span>
-              <span className="flex items-center gap-1 font-medium text-blue-700 dark:text-blue-300">
-                <Sparkles className="w-3 h-3 text-blue-600" />
-                <span>Gemini</span>
-              </span>
-              <span className="text-zinc-300 dark:text-zinc-700">+</span>
-              <span className="flex items-center gap-1 font-medium text-amber-700 dark:text-amber-300">
-                <ShieldCheck className="w-3 h-3 text-amber-600" />
-                <span>Claude</span>
-              </span>
+            <div className="hidden md:flex items-center gap-1.5 px-3 py-1 rounded-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 text-[11px]">
+              {configuredProviders.length === 0 ? (
+                <button
+                  onClick={onOpenSettings}
+                  className="flex items-center gap-1 font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
+                >
+                  <AlertCircle className="w-3 h-3" />
+                  <span>Configure API Keys</span>
+                </button>
+              ) : (
+                configuredProviders.map((p, idx) => (
+                  <React.Fragment key={p}>
+                    {idx > 0 && <span className="text-zinc-300 dark:text-zinc-700">+</span>}
+                    <span className="flex items-center gap-1 font-medium text-zinc-800 dark:text-zinc-200 capitalize">
+                      {p === 'openai' && <Brain className="w-3 h-3 text-emerald-500" />}
+                      {p === 'gemini' && <Sparkles className="w-3 h-3 text-blue-500" />}
+                      {p === 'claude' && <ShieldCheck className="w-3 h-3 text-amber-500" />}
+                      {p === 'deepseek' && <Cpu className="w-3 h-3 text-purple-500" />}
+                      {p === 'groq' && <Zap className="w-3 h-3 text-orange-500" />}
+                      <span>{p}</span>
+                    </span>
+                  </React.Fragment>
+                ))
+              )}
             </div>
 
             {currentDiscussion && (
@@ -873,270 +995,122 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
                 </div>
               </div>
             ) : (
-              /* Case B: Active Conversation Feed */
-              <div className="space-y-8">
-                {/* 1. User Message (ChatGPT/Claude User Prompt Bubble) */}
-                <div className="flex justify-end">
-                  <div className="max-w-[85%] sm:max-w-[75%] rounded-3xl rounded-tr-xs bg-zinc-900 text-white dark:bg-zinc-800 p-4 sm:p-5 shadow-sm space-y-2.5">
-                    <div className="flex items-center justify-between text-[11px] text-zinc-400 border-b border-zinc-800 dark:border-zinc-700/60 pb-2 mb-1">
-                      <span className="font-semibold text-zinc-200">You</span>
-                      <span>{new Date(currentDiscussion.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-
-                    <p className="text-sm font-normal leading-relaxed whitespace-pre-wrap selection:bg-indigo-500 selection:text-white">
-                      {currentDiscussion.question}
-                    </p>
-
-                    {/* Attached files preview in message */}
-                    {currentDiscussion.files && currentDiscussion.files.length > 0 && (
-                      <div className="pt-2 flex flex-wrap gap-1.5 border-t border-zinc-800/80 dark:border-zinc-700/60">
-                        {currentDiscussion.files.map((f: DiscussionFile) => (
-                          <span
-                            key={f.id}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-800 dark:bg-zinc-700 text-zinc-200 text-xs"
-                          >
-                            <FileText className="w-3.5 h-3.5 text-indigo-400" />
-                            <span className="truncate max-w-[160px]">{f.file_name}</span>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 2. AI Multi-Council Response Container */}
-                <div className="flex items-start gap-3 sm:gap-4">
-                  <div className="w-9 h-9 rounded-2xl bg-zinc-900 dark:bg-white text-white dark:text-zinc-950 flex items-center justify-center shrink-0 shadow-md">
-                    <BrainCircuit className="w-5 h-5 text-indigo-400 dark:text-indigo-600" />
-                  </div>
-
-                  <div className="flex-1 min-w-0 space-y-4">
-                    {/* Council Deliberation Header Bar */}
-                    <div className="p-3 rounded-2xl bg-zinc-50 dark:bg-zinc-900/80 border border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-xs text-zinc-900 dark:text-zinc-100">
-                          AI Council Deliberation
-                        </span>
-                        {status === 'running' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 animate-pulse">
-                            <span className="w-1.5 h-1.5 rounded-full bg-indigo-600 dark:bg-indigo-400 animate-ping" />
-                            <span>Deliberating...</span>
-                          </span>
-                        )}
-                        {status === 'completed' && (
-                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
-                            <span>Consensus Reached</span>
-                          </span>
-                        )}
-                        {status === 'cancelled' && (
-                          <span className="text-[11px] text-zinc-400 font-medium">Stopped</span>
-                        )}
-                      </div>
-
-                      {/* Mode Switcher Tabs (Consensus vs Model Perspectives vs Rounds) */}
-                      <div className="flex items-center gap-1 p-0.5 rounded-xl bg-zinc-200/60 dark:bg-zinc-800 text-xs">
-                        <button
-                          onClick={() => setActiveViewMode('verdict')}
-                          className={`px-3 py-1 rounded-lg font-medium transition-all ${
-                            activeViewMode === 'verdict'
-                              ? 'bg-white text-zinc-900 dark:bg-zinc-700 dark:text-white shadow-xs font-semibold'
-                              : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
-                          }`}
-                        >
-                          Consensus
-                        </button>
-                        <button
-                          onClick={() => setActiveViewMode('models')}
-                          className={`px-3 py-1 rounded-lg font-medium transition-all ${
-                            activeViewMode === 'models'
-                              ? 'bg-white text-zinc-900 dark:bg-zinc-700 dark:text-white shadow-xs font-semibold'
-                              : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
-                          }`}
-                        >
-                          Model Perspectives
-                        </button>
-                        <button
-                          onClick={() => setActiveViewMode('rounds')}
-                          className={`px-3 py-1 rounded-lg font-medium transition-all ${
-                            activeViewMode === 'rounds'
-                              ? 'bg-white text-zinc-900 dark:bg-zinc-700 dark:text-white shadow-xs font-semibold'
-                              : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'
-                          }`}
-                        >
-                          Debate Transcript
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Content View 1: Final Synthesized Verdict (ChatGPT/Claude Style) */}
-                    {activeViewMode === 'verdict' && (
-                      <div className="p-5 sm:p-6 rounded-3xl border border-zinc-200 dark:border-zinc-800/80 bg-white dark:bg-zinc-900 shadow-sm space-y-4">
-                        {status === 'running' && !finalMessage && (
-                          <div className="py-12 text-center space-y-3">
-                            <div className="w-10 h-10 rounded-full border-2 border-indigo-600/30 border-t-indigo-600 animate-spin mx-auto" />
-                            <p className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                              OpenAI, Gemini, and Claude are actively debating your prompt...
-                            </p>
-                            <p className="text-[11px] text-zinc-500">
-                              Reviewing arguments across {currentDiscussion.rounds} rigorous rounds
-                            </p>
+              /* Case B: Active Conversation Stream (Standard Natural Chat) */
+              <div className="space-y-6 pb-4">
+                {messages.map((msg) => {
+                  // User Message (Right-aligned)
+                  if (msg.role === 'user' || msg.provider === 'user') {
+                    return (
+                      <div key={msg.id} className="flex justify-end items-end gap-2.5 animate-fadeIn">
+                        <div className="max-w-[85%] sm:max-w-[75%] rounded-3xl rounded-br-xs bg-zinc-900 text-white dark:bg-zinc-800 p-4 sm:p-5 shadow-sm space-y-2">
+                          <p className="text-sm font-normal leading-relaxed whitespace-pre-wrap selection:bg-indigo-500 selection:text-white">
+                            {msg.content}
+                          </p>
+                          <div className="text-[10px] text-zinc-400 text-right">
+                            {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                           </div>
-                        )}
-
-                        {finalMessage && (
-                          <div className="space-y-4">
-                            <div className="prose dark:prose-invert max-w-none text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed">
-                              <MarkdownRenderer content={finalMessage.content} />
-                            </div>
-
-                            {/* Actions toolbar at bottom of answer */}
-                            <div className="pt-4 border-t border-zinc-100 dark:border-zinc-800 flex items-center justify-between text-xs text-zinc-400">
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={handleCopyVerdict}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 font-medium transition-colors"
-                                >
-                                  {copiedAnswer ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                                  <span>{copiedAnswer ? 'Copied to clipboard' : 'Copy answer'}</span>
-                                </button>
-                                <button
-                                  onClick={handleExportMarkdown}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300 font-medium transition-colors"
-                                >
-                                  <Download className="w-3.5 h-3.5" />
-                                  <span>Export</span>
-                                </button>
-                              </div>
-
-                              {finalMessage.duration_ms ? (
-                                <div className="flex items-center gap-1 text-[11px] font-mono">
-                                  <Clock className="w-3 h-3 text-zinc-400" />
-                                  <span>{(finalMessage.duration_ms / 1000).toFixed(1)}s total deliberation</span>
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        )}
+                        </div>
+                        <div className="w-8 h-8 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold shrink-0 shadow-xs">
+                          {user.full_name ? user.full_name.charAt(0).toUpperCase() : 'U'}
+                        </div>
                       </div>
-                    )}
+                    );
+                  }
 
-                    {/* Content View 2: Model Perspectives (Side-by-Side/Tabs for OpenAI, Gemini, Claude) */}
-                    {activeViewMode === 'models' && (
-                      <div className="space-y-4">
-                        <div className="flex items-center gap-2 border-b border-zinc-200 dark:border-zinc-800 pb-2">
-                          {(['openai', 'gemini', 'claude'] as ProviderId[]).map((prov) => {
-                            const isSelected = selectedPerspective === prov;
-                            return (
+                  // AI Assistant Message (Left-aligned)
+                  const isGemini = msg.provider === 'gemini';
+                  const isOpenAI = msg.provider === 'openai';
+                  const isClaude = msg.provider === 'claude';
+                  const isDeepSeek = msg.provider === 'deepseek';
+                  const isGroq = msg.provider === 'groq';
+
+                  const pName =
+                    isOpenAI ? 'OpenAI' :
+                    isGemini ? 'Google Gemini' :
+                    isClaude ? 'Anthropic Claude' :
+                    isDeepSeek ? 'DeepSeek' : 'Groq';
+
+                  const avatarBg =
+                    isOpenAI ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' :
+                    isGemini ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20' :
+                    isClaude ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20' :
+                    isDeepSeek ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20' :
+                    'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20';
+
+                  const borderAccent =
+                    isOpenAI ? 'border-emerald-500/20 dark:border-emerald-500/15' :
+                    isGemini ? 'border-blue-500/20 dark:border-blue-500/15' :
+                    isClaude ? 'border-amber-500/20 dark:border-amber-500/15' :
+                    isDeepSeek ? 'border-purple-500/20 dark:border-purple-500/15' :
+                    'border-orange-500/20 dark:border-orange-500/15';
+
+                  return (
+                    <div key={msg.id} className="flex items-start gap-3 sm:gap-4 animate-fadeIn">
+                      <div className={`w-8 h-8 rounded-2xl flex items-center justify-center shrink-0 border shadow-2xs ${avatarBg}`}>
+                        {isOpenAI && <Brain className="w-4 h-4" />}
+                        {isGemini && <Sparkles className="w-4 h-4" />}
+                        {isClaude && <ShieldCheck className="w-4 h-4" />}
+                        {isDeepSeek && <Cpu className="w-4 h-4" />}
+                        {isGroq && <Zap className="w-4 h-4" />}
+                      </div>
+
+                      <div className="flex-1 min-w-0 space-y-2">
+                        {/* Header */}
+                        <div className="flex items-center justify-between text-xs px-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-zinc-900 dark:text-zinc-100">{pName}</span>
+                            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 text-zinc-500">
+                              {msg.model}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-zinc-400">
+                            {msg.duration_ms ? (
+                              <span className="font-mono">{(msg.duration_ms / 1000).toFixed(1)}s</span>
+                            ) : null}
+                            <span>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                            {msg.content && (
                               <button
-                                key={prov}
-                                onClick={() => setSelectedPerspective(prov)}
-                                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all ${
-                                  isSelected
-                                    ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 shadow-xs'
-                                    : 'text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800'
-                                }`}
+                                type="button"
+                                onClick={() => navigator.clipboard.writeText(msg.content)}
+                                className="p-1 hover:text-zinc-900 dark:hover:text-zinc-100 rounded cursor-pointer"
+                                title="Copy message"
                               >
-                                {prov === 'openai' && <Brain className="w-3.5 h-3.5 text-emerald-500" />}
-                                {prov === 'gemini' && <Sparkles className="w-3.5 h-3.5 text-blue-500" />}
-                                {prov === 'claude' && <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />}
-                                <span className="capitalize">{prov}</span>
+                                <Copy className="w-3 h-3" />
                               </button>
-                            );
-                          })}
+                            )}
+                          </div>
                         </div>
 
-                        {/* Selected model's analysis & critiques */}
-                        <div className="space-y-4">
-                          {messages
-                            .filter((m) => m.provider === selectedPerspective && m.role !== 'final')
-                            .map((msg) => (
-                              <div
-                                key={msg.id}
-                                className="p-4 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900/90 shadow-2xs space-y-2"
-                              >
-                                <div className="flex items-center justify-between text-xs font-semibold text-zinc-500 border-b border-zinc-100 dark:border-zinc-800 pb-1.5">
-                                  <span>Round {msg.round_number}: {msg.role.toUpperCase()}</span>
-                                  <span className="font-mono text-[11px]">{msg.model}</span>
-                                </div>
-                                <div className="prose dark:prose-invert max-w-none text-xs text-zinc-800 dark:text-zinc-200 leading-relaxed">
-                                  <MarkdownRenderer content={msg.content} />
-                                </div>
-                              </div>
-                            ))}
+                        {/* Content */}
+                        <div className={`p-4 sm:p-5 rounded-3xl rounded-tl-xs border ${borderAccent} bg-white dark:bg-zinc-900 shadow-2xs space-y-3`}>
+                          {msg.status === 'thinking' && !msg.content ? (
+                            <div className="flex items-center gap-2 text-xs text-zinc-500 py-1 font-medium">
+                              <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping" />
+                              <span>{pName} is thinking & replying...</span>
+                            </div>
+                          ) : msg.status === 'failed' && !msg.content ? (
+                            <div className="flex items-center gap-2 text-xs text-rose-500 py-1">
+                              <AlertCircle className="w-4 h-4 shrink-0" />
+                              <span>{msg.error_message || 'Failed to respond. Please check your API key in Settings.'}</span>
+                            </div>
+                          ) : (
+                            <div className="prose dark:prose-invert max-w-none text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed">
+                              <MarkdownRenderer content={msg.content} />
+                            </div>
+                          )}
                         </div>
                       </div>
-                    )}
+                    </div>
+                  );
+                })}
 
-                    {/* Content View 3: Debate Transcript (Full Round-by-Round Breakdown) */}
-                    {activeViewMode === 'rounds' && (
-                      <div className="space-y-6">
-                        {/* Round 1 */}
-                        {r1Messages.length > 0 && (
-                          <div className="space-y-3">
-                            <h3 className="text-xs font-bold text-zinc-600 uppercase tracking-wider">
-                              Round 1: Independent Analysis
-                            </h3>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                              {r1Messages.map((m) => (
-                                <div key={m.id} className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs space-y-2">
-                                  <div className="font-semibold text-zinc-900 dark:text-white capitalize flex items-center gap-1.5">
-                                    <span>{m.provider}</span>
-                                  </div>
-                                  <div className="text-zinc-700 dark:text-zinc-300 max-h-60 overflow-y-auto">
-                                    <MarkdownRenderer content={m.content} />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Round 2 */}
-                        {r2Messages.length > 0 && (
-                          <div className="space-y-3">
-                            <h3 className="text-xs font-bold text-zinc-600 uppercase tracking-wider">
-                              Round 2: Cross Review & Critique
-                            </h3>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                              {r2Messages.map((m) => (
-                                <div key={m.id} className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs space-y-2">
-                                  <div className="font-semibold text-zinc-900 dark:text-white capitalize">
-                                    <span>{m.provider}</span>
-                                  </div>
-                                  <div className="text-zinc-700 dark:text-zinc-300 max-h-60 overflow-y-auto">
-                                    <MarkdownRenderer content={m.content} />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Round 3 */}
-                        {r3Messages.length > 0 && (
-                          <div className="space-y-3">
-                            <h3 className="text-xs font-bold text-zinc-600 uppercase tracking-wider">
-                              Round 3: Final Debate & Defense
-                            </h3>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                              {r3Messages.map((m) => (
-                                <div key={m.id} className="p-3.5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-xs space-y-2">
-                                  <div className="font-semibold text-zinc-900 dark:text-white capitalize">
-                                    <span>{m.provider}</span>
-                                  </div>
-                                  <div className="text-zinc-700 dark:text-zinc-300 max-h-60 overflow-y-auto">
-                                    <MarkdownRenderer content={m.content} />
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
+                {/* If AI is generating but message hasn't been added yet */}
+                {status === 'running' && !messages.some((m) => m.status === 'thinking') && (
+                  <div className="flex items-center gap-3 text-xs text-zinc-500 pl-12 py-2">
+                    <span className="w-2 h-2 rounded-full bg-indigo-600 animate-ping" />
+                    <span>AI is responding...</span>
                   </div>
-                </div>
+                )}
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -1166,6 +1140,25 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
                     </button>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Warning banner when no keys are configured */}
+            {providerKeyStore.getConfiguredProviders().length === 0 && (
+              <div className="mb-2.5 p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/40 flex items-center justify-between gap-3 text-xs shadow-2xs">
+                <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 min-w-0">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <span className="truncate">
+                    No AI API keys configured. Add an API key in Settings to get responses.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={onOpenSettings}
+                  className="px-3 py-1 rounded-xl bg-amber-600 hover:bg-amber-700 text-white text-[11px] font-semibold transition-colors shrink-0 cursor-pointer shadow-xs"
+                >
+                  Configure Keys
+                </button>
               </div>
             )}
 
@@ -1262,71 +1255,73 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
                     <span className="hidden sm:inline">Roles (@)</span>
                   </button>
 
-                  {/* Multi-AI config toggle pill */}
-                  <div className="relative">
-                    <button
-                      onClick={() => setShowConfigPopover(!showConfigPopover)}
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 border border-zinc-200/70 dark:border-zinc-800 cursor-pointer"
-                    >
-                      <Sliders className="w-3.5 h-3.5 text-indigo-500" />
-                      <span>{rounds} Rounds</span>
-                      <ChevronDown className="w-3 h-3 text-zinc-400" />
-                    </button>
+                  {/* Multi-AI config toggle pill (Only if user has configured multiple models) */}
+                  {configuredProviders.length > 1 && (
+                    <div className="relative">
+                      <button
+                        onClick={() => setShowConfigPopover(!showConfigPopover)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 border border-zinc-200/70 dark:border-zinc-800 cursor-pointer"
+                      >
+                        <Sliders className="w-3.5 h-3.5 text-indigo-500" />
+                        <span>{rounds === 1 ? '1 Round' : `${rounds} Rounds`}</span>
+                        <ChevronDown className="w-3 h-3 text-zinc-400" />
+                      </button>
 
-                    {/* Popover config */}
-                    {showConfigPopover && (
-                      <div className="absolute bottom-10 left-0 w-64 p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xl z-50 space-y-3">
-                        <div className="text-xs font-semibold text-zinc-900 dark:text-white">
-                          Deliberation Settings
-                        </div>
-
-                        <div>
-                          <label className="text-[11px] text-zinc-500 font-medium">Number of Rounds</label>
-                          <div className="grid grid-cols-3 gap-1 mt-1">
-                            {[1, 2, 3].map((r) => (
-                              <button
-                                key={r}
-                                onClick={() => {
-                                  setRounds(r);
-                                  setShowConfigPopover(false);
-                                }}
-                                className={`py-1 rounded-lg text-xs font-medium ${
-                                  rounds === r
-                                    ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 font-bold'
-                                    : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'
-                                }`}
-                              >
-                                {r} {r === 1 ? 'Round' : 'Rounds'}
-                              </button>
-                            ))}
+                      {/* Popover config */}
+                      {showConfigPopover && (
+                        <div className="absolute bottom-10 left-0 w-64 p-3 rounded-2xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 shadow-xl z-50 space-y-3">
+                          <div className="text-xs font-semibold text-zinc-900 dark:text-white">
+                            Deliberation Settings
                           </div>
-                        </div>
 
-                        <div>
-                          <label className="text-[11px] text-zinc-500 font-medium">Participating Models</label>
-                          <div className="space-y-1 mt-1">
-                            {(['openai', 'gemini', 'claude'] as ProviderId[]).map((prov) => (
-                              <label key={prov} className="flex items-center gap-2 text-xs text-zinc-700 dark:text-zinc-300 capitalize cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={participants.includes(prov)}
-                                  onChange={() => {
-                                    if (participants.includes(prov) && participants.length > 1) {
-                                      setParticipants(participants.filter((p) => p !== prov));
-                                    } else if (!participants.includes(prov)) {
-                                      setParticipants([...participants, prov]);
-                                    }
+                          <div>
+                            <label className="text-[11px] text-zinc-500 font-medium">Number of Rounds</label>
+                            <div className="grid grid-cols-3 gap-1 mt-1">
+                              {[1, 2, 3].map((r) => (
+                                <button
+                                  key={r}
+                                  onClick={() => {
+                                    setRounds(r);
+                                    setShowConfigPopover(false);
                                   }}
-                                  className="rounded text-indigo-600"
-                                />
-                                <span>{prov}</span>
-                              </label>
-                            ))}
+                                  className={`py-1 rounded-lg text-xs font-medium ${
+                                    rounds === r
+                                      ? 'bg-zinc-900 text-white dark:bg-white dark:text-zinc-950 font-bold'
+                                      : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'
+                                  }`}
+                                >
+                                  {r} {r === 1 ? 'Round' : 'Rounds'}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[11px] text-zinc-500 font-medium">Participating Models</label>
+                            <div className="space-y-1 mt-1">
+                              {configuredProviders.map((prov) => (
+                                <label key={prov} className="flex items-center gap-2 text-xs text-zinc-700 dark:text-zinc-300 capitalize cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={participants.includes(prov)}
+                                    onChange={() => {
+                                      if (participants.includes(prov) && participants.length > 1) {
+                                        setParticipants(participants.filter((p) => p !== prov));
+                                      } else if (!participants.includes(prov)) {
+                                        setParticipants([...participants, prov]);
+                                      }
+                                    }}
+                                    className="rounded text-indigo-600"
+                                  />
+                                  <span>{prov}</span>
+                                </label>
+                              ))}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Right: Send or Stop Button */}

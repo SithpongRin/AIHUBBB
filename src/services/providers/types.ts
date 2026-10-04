@@ -27,4 +27,5 @@ export interface AIProvider {
   defaultModel: string;
   validateConnection: (apiKey: string, model?: string) => Promise<{ success: boolean; error?: string }>;
   generateResponse: (request: ProviderRequest) => Promise<ProviderResponse>;
+  fetchAvailableModels?: (apiKey: string) => Promise<{ id: string; name: string; description: string }[]>;
 }

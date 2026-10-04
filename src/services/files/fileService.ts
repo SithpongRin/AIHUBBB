@@ -137,6 +137,45 @@ export class FileService {
     return this.getLocalFiles().filter((f) => f.user_id === userId);
   }
 
+  public async linkFileToDiscussion(fileId: string, discussionId: string): Promise<void> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        await supabase
+          .from('files')
+          .update({ discussion_id: discussionId })
+          .eq('id', fileId);
+      } catch (err) {
+        console.error('Supabase linkFileToDiscussion error:', err);
+      }
+    }
+
+    const list = this.getLocalFiles();
+    const idx = list.findIndex((f) => f.id === fileId);
+    if (idx !== -1) {
+      list[idx].discussion_id = discussionId;
+      this.setLocalFiles(list);
+    }
+  }
+
+  public async getDiscussionFiles(discussionId: string): Promise<DiscussionFile[]> {
+    if (isSupabaseConfigured && supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('files')
+          .select('*')
+          .eq('discussion_id', discussionId);
+
+        if (!error && data) {
+          return data as DiscussionFile[];
+        }
+      } catch (err) {
+        console.error('Supabase getDiscussionFiles error:', err);
+      }
+    }
+
+    return this.getLocalFiles().filter((f) => f.discussion_id === discussionId);
+  }
+
   public async deleteFile(id: string): Promise<void> {
     if (isSupabaseConfigured && supabase) {
       try {

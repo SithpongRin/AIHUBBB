@@ -2,10 +2,12 @@ import { DiscussionFile, DiscussionMessage, DiscussionStatus, ProviderId } from 
 import { providerKeyStore } from '../providers/keyStore';
 import { providerRegistry } from '../providers/registry';
 import {
+  buildChatTurnPrompt,
   buildModeratorPrompt,
   buildRound1Prompt,
   buildRound2Prompt,
   buildRound3Prompt,
+  buildSequentialGroupChatPrompt,
   ROLE_DEFINITIONS,
 } from './prompts';
 
@@ -16,6 +18,7 @@ export interface OrchestrationOptions {
   rounds: number;
   moderator: ProviderId;
   files?: DiscussionFile[];
+  history?: DiscussionMessage[];
   onMessageUpdate: (msg: DiscussionMessage) => void;
   onStatusChange: (status: DiscussionStatus) => void;
 }
@@ -57,8 +60,9 @@ export class DiscussionOrchestrator {
       role: 'analysis' | 'review' | 'debate' | 'final'
     ): DiscussionMessage => {
       const model = providerKeyStore.getModel(provider) || 'default';
+      const uniqueSuffix = Math.random().toString(36).substring(2, 7);
       const msg: DiscussionMessage = {
-        id: `${discussionId}-r${roundNumber}-${provider}`,
+        id: `${discussionId}-${Date.now()}-${provider}-${uniqueSuffix}`,
         discussion_id: discussionId,
         round_number: roundNumber,
         provider,
@@ -86,17 +90,34 @@ export class DiscussionOrchestrator {
       throw new Error(`Message ${msgId} not found`);
     };
 
+    // Filter participants to only those that actually have configured API keys!
+    const configuredParticipants = participants.filter((p) => Boolean(providerKeyStore.getKey(p)));
+    const targetParticipants = configuredParticipants.length > 0 ? configuredParticipants : participants;
+
     try {
       // ==========================================
-      // ROUND 1: INDEPENDENT ANALYSIS
+      // ROUND 1: CONVERSATIONAL GROUP CHAT RESPONSES
       // ==========================================
       if (this.isCancelled) return allMessages;
 
-      const r1Promises = participants.map(async (p) => {
+      for (const p of targetParticipants) {
+        if (this.isCancelled) break;
         const msg = createInitialMessage(1, p, 'analysis');
         const providerInstance = providerRegistry.get(p);
         const apiKey = providerKeyStore.getKey(p);
         const model = providerKeyStore.getModel(p);
+
+        // Gather completed prior responses so this model speaks directly in the thread!
+        const priorCompleted = allMessages.filter(
+          (m) => m.status === 'completed' && Boolean(m.content)
+        );
+        const userPrompt = buildChatTurnPrompt(
+          question,
+          options.history || [],
+          priorCompleted,
+          p,
+          files
+        );
 
         try {
           const res = await providerInstance.generateResponse({
@@ -105,25 +126,24 @@ export class DiscussionOrchestrator {
             apiKey,
             role: 'analysis',
             systemPrompt: ROLE_DEFINITIONS[p]?.systemInstruction || '',
-            userPrompt: buildRound1Prompt(question, files),
+            userPrompt,
             signal,
           });
 
-          return updateMessage(msg.id, {
+          updateMessage(msg.id, {
             content: res.content,
             status: 'completed',
             duration_ms: res.durationMs,
           });
         } catch (err: unknown) {
           const errMsg = err instanceof Error ? err.message : 'Unknown provider error';
-          return updateMessage(msg.id, {
+          updateMessage(msg.id, {
             status: this.isCancelled ? 'cancelled' : 'failed',
             error_message: errMsg,
           });
         }
-      });
+      }
 
-      await Promise.allSettled(r1Promises);
       if (this.isCancelled) {
         onStatusChange('cancelled');
         return allMessages;
@@ -131,7 +151,11 @@ export class DiscussionOrchestrator {
 
       const completedR1 = allMessages.filter((m) => m.round_number === 1 && m.status === 'completed');
       if (completedR1.length === 0) {
-        throw new Error('All AI providers failed to respond in Round 1. Please check API keys in Settings.');
+        const errorDetails = allMessages
+          .filter((m) => m.round_number === 1 && m.error_message)
+          .map((m) => `${m.provider.toUpperCase()}: ${m.error_message}`)
+          .join('\n');
+        throw new Error(errorDetails || 'All AI providers failed to respond in Round 1. Please check API keys in Settings.');
       }
 
       // ==========================================
@@ -140,7 +164,7 @@ export class DiscussionOrchestrator {
       if (rounds >= 2 && !this.isCancelled) {
         const r1Messages = allMessages.filter((m) => m.round_number === 1);
 
-        const r2Promises = participants.map(async (p) => {
+        const r2Promises = targetParticipants.map(async (p) => {
           const msg = createInitialMessage(2, p, 'review');
           const providerInstance = providerRegistry.get(p);
           const apiKey = providerKeyStore.getKey(p);
@@ -185,7 +209,7 @@ export class DiscussionOrchestrator {
         const r1Messages = allMessages.filter((m) => m.round_number === 1);
         const r2Messages = allMessages.filter((m) => m.round_number === 2);
 
-        const r3Promises = participants.map(async (p) => {
+        const r3Promises = targetParticipants.map(async (p) => {
           const msg = createInitialMessage(3, p, 'debate');
           const providerInstance = providerRegistry.get(p);
           const apiKey = providerKeyStore.getKey(p);
@@ -275,6 +299,21 @@ export class DiscussionOrchestrator {
       if (this.isCancelled) {
         onStatusChange('cancelled');
       } else {
+        const errMsg = err instanceof Error ? err.message : 'Deliberation failed';
+        const failMsg: DiscussionMessage = {
+          id: `${discussionId}-final-error`,
+          discussion_id: discussionId,
+          round_number: rounds + 1,
+          provider: moderator,
+          model: 'system',
+          role: 'final',
+          content: `### Deliberation Paused\n\n**Issue:** ${errMsg}\n\n**How to fix:**\nAIHUB connects directly to AI providers using your own API keys (Bring-Your-Own-Key). To get responses:\n1. Open **Settings** (gear icon in the top right or bottom left).\n2. Enter at least one API key for **Google Gemini (free)**, **OpenAI**, or **Anthropic Claude**.\n3. Click **Save API Keys & Models**.\n\nOnce saved, retry your message.`,
+          status: 'failed',
+          error_message: errMsg,
+          created_at: new Date().toISOString(),
+        };
+        allMessages.push(failMsg);
+        onMessageUpdate(failMsg);
         onStatusChange('failed');
       }
     }

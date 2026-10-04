@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <defs>
+    <linearGradient id="aihub-grad" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#6366F1" />
+      <stop offset="50%" stop-color="#8B5CF6" />
+      <stop offset="100%" stop-color="#4F46E5" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="9" fill="url(#aihub-grad)" />
+  <!-- AI Council Brain / Nodes Circuit -->
+  <circle cx="16" cy="11" r="3" fill="#FFFFFF" />
+  <circle cx="10" cy="21" r="2.5" fill="#FFFFFF" opacity="0.9" />
+  <circle cx="22" cy="21" r="2.5" fill="#FFFFFF" opacity="0.9" />
+  <!-- Connecting Synapse Lines -->
+  <path d="M16 11L10 21M16 11L22 21M10 21H22" stroke="#FFFFFF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

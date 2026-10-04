@@ -3,6 +3,8 @@ import { AIProvider } from './types';
 import { OpenAIProvider } from './openaiProvider';
 import { GeminiProvider } from './geminiProvider';
 import { ClaudeProvider } from './claudeProvider';
+import { DeepSeekProvider } from './deepseekProvider';
+import { GroqProvider } from './groqProvider';
 
 class ProviderRegistry {
   private providers: Map<ProviderId, AIProvider> = new Map();
@@ -11,6 +13,8 @@ class ProviderRegistry {
     this.register(new OpenAIProvider());
     this.register(new GeminiProvider());
     this.register(new ClaudeProvider());
+    this.register(new DeepSeekProvider());
+    this.register(new GroqProvider());
   }
 
   public register(provider: AIProvider): void {

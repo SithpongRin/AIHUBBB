@@ -1,8 +1,8 @@
-export type ProviderId = 'openai' | 'gemini' | 'claude';
+export type ProviderId = 'openai' | 'gemini' | 'claude' | 'deepseek' | 'groq';
 
 export type DiscussionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
-export type MessageRole = 'analysis' | 'review' | 'debate' | 'final' | 'system';
+export type MessageRole = 'analysis' | 'review' | 'debate' | 'final' | 'system' | 'user';
 
 export type MessageStatus = 'waiting' | 'thinking' | 'completed' | 'failed' | 'skipped' | 'cancelled';
 
@@ -41,7 +41,7 @@ export interface DiscussionMessage {
   id: string;
   discussion_id: string;
   round_number: number;
-  provider: ProviderId;
+  provider: ProviderId | 'user';
   model: string;
   role: MessageRole;
   content: string;
