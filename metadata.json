@@ -1,0 +1,6 @@
+{
+  "name": "AIHUB — Multi-AI Discussion Platform",
+  "description": "Multi-AI discussion platform where multiple AI models analyze, critique, and debate user questions to synthesize superior conclusions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
