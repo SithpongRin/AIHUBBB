@@ -34,6 +34,7 @@ export const DiscussionView: React.FC<DiscussionProps> = ({
   const [status, setStatus] = useState<DiscussionStatus>('pending');
   const [activeTabRound, setActiveTabRound] = useState<number | 'all'>('all');
   const [showQuestionFull, setShowQuestionFull] = useState(false);
+  const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
 
   const orchestratorRef = useRef<DiscussionOrchestrator | null>(null);
   const hasStartedRef = useRef(false);
@@ -90,7 +91,27 @@ export const DiscussionView: React.FC<DiscussionProps> = ({
         setStatus(newStatus);
         discussionService.updateDiscussionStatus(disc.id, newStatus);
       },
+      onNotice: (notice) => {
+        setNoticeMessage(notice.message);
+        setTimeout(() => setNoticeMessage(null), 6000);
+      },
     });
+  };
+
+  const handleRetryMessage = async (msg: DiscussionMessage) => {
+    if (!discussion) return;
+    const orchestrator = orchestratorRef.current || new DiscussionOrchestrator();
+    orchestratorRef.current = orchestrator;
+    await orchestrator.retryMessage(
+      msg,
+      discussion.question,
+      messages,
+      discussion.files,
+      (updated) => {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+        discussionService.saveMessage(updated);
+      }
+    );
   };
 
   const handleStop = () => {
@@ -275,6 +296,19 @@ export const DiscussionView: React.FC<DiscussionProps> = ({
 
       {/* Main Deliberation Stream */}
       <div className="space-y-12">
+        {noticeMessage && (
+          <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-3 shadow-2xs">
+            <span>{noticeMessage}</span>
+            <button
+              type="button"
+              onClick={() => setNoticeMessage(null)}
+              className="text-amber-600 hover:text-amber-800 dark:hover:text-amber-200 text-xs font-semibold cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         {/* ================= ROUND 1 ================= */}
         {(activeTabRound === 'all' || activeTabRound === 1) && (
           <section className="space-y-4">
@@ -294,7 +328,12 @@ export const DiscussionView: React.FC<DiscussionProps> = ({
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {r1Messages.map((msg) => (
-                <ResponseCard key={msg.id} message={msg} roundTitle="Independent Analysis" />
+                <ResponseCard
+                  key={msg.id}
+                  message={msg}
+                  roundTitle="Independent Analysis"
+                  onRetry={handleRetryMessage}
+                />
               ))}
             </div>
           </section>
@@ -324,7 +363,12 @@ export const DiscussionView: React.FC<DiscussionProps> = ({
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {r2Messages.map((msg) => (
-                  <ResponseCard key={msg.id} message={msg} roundTitle="Cross Review" />
+                  <ResponseCard
+                    key={msg.id}
+                    message={msg}
+                    roundTitle="Cross Review"
+                    onRetry={handleRetryMessage}
+                  />
                 ))}
               </div>
             )}
@@ -355,7 +399,12 @@ export const DiscussionView: React.FC<DiscussionProps> = ({
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {r3Messages.map((msg) => (
-                  <ResponseCard key={msg.id} message={msg} roundTitle="Final Debate" />
+                  <ResponseCard
+                    key={msg.id}
+                    message={msg}
+                    roundTitle="Final Debate"
+                    onRetry={handleRetryMessage}
+                  />
                 ))}
               </div>
             )}

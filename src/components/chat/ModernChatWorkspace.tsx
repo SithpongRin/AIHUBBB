@@ -34,6 +34,7 @@ import {
   Info,
   Cpu,
   Zap,
+  RotateCcw,
 } from 'lucide-react';
 
 const MENTION_OPTIONS = [
@@ -108,7 +109,7 @@ import {
 } from '@/types';
 import { discussionService } from '@/services/discussions/discussionService';
 import { fileService } from '@/services/files/fileService';
-import { providerKeyStore } from '@/services/providers/keyStore';
+import { ALL_PROVIDERS, providerKeyStore } from '@/services/providers/keyStore';
 import { DiscussionOrchestrator } from '@/services/orchestrator/discussionOrchestrator';
 import { parseFinalSynthesis } from '@/services/orchestrator/parseSynthesis';
 import { MarkdownRenderer } from '../ui/MarkdownRenderer';
@@ -167,6 +168,7 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
   const [copiedAnswer, setCopiedAnswer] = useState(false);
   const [showShareToast, setShowShareToast] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
 
   const orchestratorRef = useRef<DiscussionOrchestrator | null>(null);
   const isRunningRef = useRef(false);
@@ -277,7 +279,29 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
         discussionService.updateDiscussionStatus(disc.id, newStatus);
         loadHistory();
       },
+      onNotice: (notice) => {
+        setNoticeMessage(notice.message);
+        setTimeout(() => setNoticeMessage(null), 6000);
+      },
     });
+  };
+
+  const handleRetrySingleMessage = async (failedMsg: DiscussionMessage) => {
+    if (isRunningRef.current) return;
+    const orchestrator = orchestratorRef.current || new DiscussionOrchestrator();
+    orchestratorRef.current = orchestrator;
+
+    const question = currentDiscussion?.question || 'Follow-up inquiry';
+    await orchestrator.retryMessage(
+      failedMsg,
+      question,
+      messages,
+      currentDiscussion?.files,
+      (updated) => {
+        setMessages((prev) => prev.map((m) => (m.id === updated.id ? updated : m)));
+        discussionService.saveMessage(updated);
+      }
+    );
   };
 
   // Stop deliberation
@@ -997,6 +1021,21 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
             ) : (
               /* Case B: Active Conversation Stream (Standard Natural Chat) */
               <div className="space-y-6 pb-4">
+                {noticeMessage && (
+                  <div className="p-3 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 flex items-center justify-between gap-3 shadow-2xs">
+                    <div className="flex items-center gap-2">
+                      <Info className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>{noticeMessage}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setNoticeMessage(null)}
+                      className="text-amber-600 hover:text-amber-800 dark:hover:text-amber-200 text-xs font-semibold cursor-pointer"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                )}
                 {messages.map((msg) => {
                   // User Message (Right-aligned)
                   if (msg.role === 'user' || msg.provider === 'user') {
@@ -1089,9 +1128,24 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
                               <span>{pName} is thinking & replying...</span>
                             </div>
                           ) : msg.status === 'failed' && !msg.content ? (
-                            <div className="flex items-center gap-2 text-xs text-rose-500 py-1">
-                              <AlertCircle className="w-4 h-4 shrink-0" />
-                              <span>{msg.error_message || 'Failed to respond. Please check your API key in Settings.'}</span>
+                            <div className="p-3.5 rounded-2xl bg-rose-50/80 dark:bg-rose-950/30 border border-rose-200/80 dark:border-rose-900/40 text-xs text-rose-800 dark:text-rose-300 space-y-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-1.5 font-semibold text-rose-700 dark:text-rose-400">
+                                  <AlertCircle className="w-4 h-4 shrink-0" />
+                                  <span>Response Interrupted</span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRetrySingleMessage(msg)}
+                                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[11px] font-semibold transition-colors cursor-pointer shadow-xs"
+                                >
+                                  <RotateCcw className="w-3 h-3" />
+                                  <span>Retry this response</span>
+                                </button>
+                              </div>
+                              <p className="text-[11px] text-rose-700 dark:text-rose-300/90 leading-relaxed">
+                                {msg.error_message || 'Failed to respond. Please check your API key or model in Settings.'}
+                              </p>
                             </div>
                           ) : (
                             <div className="prose dark:prose-invert max-w-none text-sm text-zinc-800 dark:text-zinc-200 leading-relaxed">
@@ -1353,8 +1407,30 @@ export const ModernChatWorkspace: React.FC<ModernChatWorkspaceProps> = ({
             </div>
 
             {/* Micro disclaimer footer */}
-            <p className="mt-2 text-center text-[10px] text-zinc-600 dark:text-zinc-300">
-              AIHUB Multi-AI Council — Powered by OpenAI GPT-4o, Google Gemini 1.5, and Anthropic Claude 3.5.
+            <p className="mt-2 text-center text-[10px] text-zinc-600 dark:text-zinc-400">
+              AIHUB Multi-AI Council &mdash; Powered by{' '}
+              {(() => {
+                const active = ALL_PROVIDERS
+                  .filter((p) => p !== 'mock' && Boolean(providerKeyStore.getKey(p)))
+                  .map((p) => {
+                    const name =
+                      p === 'openai'
+                        ? 'OpenAI'
+                        : p === 'gemini'
+                        ? 'Google Gemini'
+                        : p === 'claude'
+                        ? 'Anthropic Claude'
+                        : p === 'groq'
+                        ? 'Groq'
+                        : 'DeepSeek';
+                    const m = providerKeyStore.getModel(p);
+                    return m ? `${name} (${m})` : name;
+                  });
+                if (active.length === 0) {
+                  return 'Multi-Model Deliberation Architecture (Configure API keys in Settings)';
+                }
+                return active.join(', ');
+              })()}
             </p>
           </div>
         </div>

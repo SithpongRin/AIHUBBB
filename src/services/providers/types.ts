@@ -1,4 +1,6 @@
-import { MessageRole, ProviderId } from '@/types';
+import { MessageRole, ModelInfo, ProviderId } from '@/types';
+
+export type { ModelInfo };
 
 export interface ProviderRequest {
   provider: ProviderId;
@@ -27,5 +29,6 @@ export interface AIProvider {
   defaultModel: string;
   validateConnection: (apiKey: string, model?: string) => Promise<{ success: boolean; error?: string }>;
   generateResponse: (request: ProviderRequest) => Promise<ProviderResponse>;
+  listModels: (apiKey: string) => Promise<ModelInfo[]>;
   fetchAvailableModels?: (apiKey: string) => Promise<{ id: string; name: string; description: string }[]>;
 }

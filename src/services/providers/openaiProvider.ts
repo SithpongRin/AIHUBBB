@@ -1,4 +1,6 @@
-import { AIProvider, ProviderRequest, ProviderResponse } from './types';
+import { AIProvider, ModelInfo, ProviderRequest, ProviderResponse } from './types';
+import { STATIC_FALLBACK_MODELS } from './modelUtils';
+import { fetchWithRetry, sanitizeMessage } from './withRetry';
 
 export class OpenAIProvider implements AIProvider {
   public id = 'openai' as const;
@@ -7,41 +9,85 @@ export class OpenAIProvider implements AIProvider {
   public defaultRoleName = 'Lead Analyst';
   public defaultModel = 'gpt-4o';
 
-  public async validateConnection(apiKey: string, model?: string): Promise<{ success: boolean; error?: string }> {
-    if (!apiKey) {
-      return { success: false, error: 'API key is required.' };
+  public async listModels(apiKey: string): Promise<ModelInfo[]> {
+    if (!apiKey || !apiKey.trim()) return STATIC_FALLBACK_MODELS.openai;
+    const cleanKey = apiKey.trim();
+
+    // 1. Try serverless proxy first to avoid CORS
+    try {
+      const proxyRes = await fetch('/api/provider/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'openai', apiKey: cleanKey }),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (Array.isArray(data.models) && data.models.length > 0) {
+          return data.models;
+        }
+      }
+    } catch {
+      // Serverless proxy unavailable, fallback to direct fetch
     }
 
+    // 2. Direct client fetch fallback
     try {
       const response = await fetch('https://api.openai.com/v1/models', {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${cleanKey}`,
         },
       });
 
-      if (!response.ok) {
-        if (response.status === 401) {
-          return { success: false, error: 'OpenAI authentication failed. Please verify your API key.' };
-        }
-        if (response.status === 429) {
-          return { success: false, error: 'OpenAI rate limit or credit quota exceeded.' };
-        }
-        return { success: false, error: `OpenAI connection failed (Status ${response.status}).` };
-      }
+      if (!response.ok) return STATIC_FALLBACK_MODELS.openai;
 
       const data = await response.json();
-      if (model && Array.isArray(data.data)) {
-        const found = data.data.some((m: { id: string }) => m.id === model);
-        if (!found) {
-          // Model might still be valid or restricted, but key itself is valid
-          return { success: true };
-        }
-      }
+      const rawList = Array.isArray(data.data) ? data.data : [];
 
-      return { success: true };
+      const filtered: ModelInfo[] = rawList
+        .filter((m: { id?: string }) => {
+          const id = (m.id || '').toLowerCase();
+          const isChatPrefix =
+            id.startsWith('gpt-') ||
+            id.startsWith('o1') ||
+            id.startsWith('o3') ||
+            id.startsWith('chatgpt');
+          const isNonChat =
+            id.includes('audio') ||
+            id.includes('realtime') ||
+            id.includes('instruct') ||
+            id.includes('embedding') ||
+            id.includes('tts') ||
+            id.includes('whisper') ||
+            id.includes('dall-e') ||
+            id.includes('babbage') ||
+            id.includes('davinci');
+          return isChatPrefix && !isNonChat;
+        })
+        .map((m: { id: string }) => ({
+          id: m.id,
+          label: m.id,
+        }));
+
+      return filtered.length > 0 ? filtered : STATIC_FALLBACK_MODELS.openai;
+    } catch {
+      return STATIC_FALLBACK_MODELS.openai;
+    }
+  }
+
+  public async validateConnection(apiKey: string): Promise<{ success: boolean; error?: string; models?: ModelInfo[] }> {
+    if (!apiKey || !apiKey.trim()) {
+      return { success: false, error: 'OpenAI API key is required.' };
+    }
+
+    try {
+      const models = await this.listModels(apiKey);
+      if (models && models.length > 0) {
+        return { success: true, models };
+      }
+      return { success: false, error: 'No active OpenAI models available for this API key.' };
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Network error connecting to OpenAI.';
+      const msg = err instanceof Error ? sanitizeMessage(err.message) : 'Network error connecting to OpenAI.';
       return { success: false, error: msg };
     }
   }
@@ -59,47 +105,33 @@ export class OpenAIProvider implements AIProvider {
       { role: 'user', content: userPrompt },
     ];
 
+    const targetModel = model || this.defaultModel;
+
     try {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
+      const response = await fetchWithRetry(
+        'https://api.openai.com/v1/chat/completions',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey.trim()}`,
+          },
+          body: JSON.stringify({
+            model: targetModel,
+            messages,
+            temperature: 0.7,
+          }),
         },
-        body: JSON.stringify({
-          model: model || this.defaultModel,
-          messages,
-          temperature: 0.7,
-        }),
-        signal,
-      });
+        { signal }
+      );
 
       const durationMs = Date.now() - startTime;
-
-      if (!response.ok) {
-        let errDetail = '';
-        try {
-          const errData = await response.json();
-          errDetail = errData.error?.message || '';
-        } catch {
-          // ignore parsing error
-        }
-
-        if (response.status === 401) {
-          throw new Error('OpenAI authentication failed. Please verify your API key in Settings.');
-        }
-        if (response.status === 429) {
-          throw new Error(`OpenAI rate limit or credit quota exceeded. ${errDetail}`.trim());
-        }
-        throw new Error(`OpenAI error (${response.status}): ${errDetail || response.statusText}`);
-      }
-
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
 
       return {
         provider: 'openai',
-        model: model || this.defaultModel,
+        model: targetModel,
         content,
         durationMs,
       };
@@ -107,7 +139,8 @@ export class OpenAIProvider implements AIProvider {
       if (err instanceof Error && err.name === 'AbortError') {
         throw new Error('Discussion was stopped by user.');
       }
-      throw err;
+      const msg = err instanceof Error ? sanitizeMessage(err.message) : 'OpenAI request failed';
+      throw new Error(msg);
     }
   }
 }

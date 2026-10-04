@@ -1,46 +1,23 @@
 import { ProviderConfig, ProviderId } from '@/types';
+import { STATIC_FALLBACK_MODELS } from './modelUtils';
 
 const STORAGE_PREFIX = 'aihub_provider_key_';
 const MODEL_PREFIX = 'aihub_provider_model_';
 const ENABLED_PREFIX = 'aihub_provider_enabled_';
+const DELAY_KEY = 'aihub_request_delay_seconds';
 
 export const DEFAULT_MODELS: Record<ProviderId, string> = {
   openai: 'gpt-4o',
-  gemini: 'gemini-3.8-flash',
-  claude: 'claude-3-5-sonnet-20241022',
+  gemini: 'gemini-2.5-flash',
+  claude: 'claude-3-7-sonnet-20250219',
   deepseek: 'deepseek-chat',
   groq: 'llama-3.3-70b-versatile',
+  mock: 'mock-fast',
 };
 
-export const AVAILABLE_MODELS: Record<ProviderId, { id: string; name: string; description: string }[]> = {
-  openai: [
-    { id: 'gpt-4o', name: 'gpt-4o', description: 'Flagship model for high-intelligence reasoning' },
-    { id: 'gpt-4o-mini', name: 'gpt-4o-mini', description: 'Affordable, fast model for everyday tasks' },
-    { id: 'gpt-4-turbo', name: 'gpt-4-turbo', description: 'High-capability multimodal predecessor' },
-  ],
-  gemini: [
-    { id: 'gemini-3.8-flash', name: 'gemini-3.8-flash', description: 'Latest next-gen high speed multimodal model (Recommended)' },
-    { id: 'gemini-2.5-flash', name: 'gemini-2.5-flash', description: 'Fast performance across general tasks' },
-    { id: 'gemini-1.5-flash', name: 'gemini-1.5-flash', description: 'Lightweight model for everyday tasks' },
-    { id: 'gemini-1.5-pro', name: 'gemini-1.5-pro', description: 'Complex reasoning tasks, coding, and massive context' },
-  ],
-  claude: [
-    { id: 'claude-3-5-sonnet-20241022', name: 'claude-3-5-sonnet-20241022', description: 'Anthropic flagship model for coding and deep reasoning' },
-    { id: 'claude-3-5-haiku-20241022', name: 'claude-3-5-haiku-20241022', description: 'Ultra-fast lightweight model with near-instant responsiveness' },
-    { id: 'claude-3-opus-20240229', name: 'claude-3-opus-20240229', description: 'Powerful model for highly complex analytical assignments' },
-  ],
-  deepseek: [
-    { id: 'deepseek-chat', name: 'deepseek-chat', description: 'Official DeepSeek-V3 model for general chat and coding' },
-    { id: 'deepseek-reasoner', name: 'deepseek-reasoner', description: 'Official DeepSeek-R1 reasoning model with CoT' },
-  ],
-  groq: [
-    { id: 'llama-3.3-70b-versatile', name: 'llama-3.3-70b-versatile', description: 'Meta Llama 3.3 70B on Groq LPUs' },
-    { id: 'llama-3.1-8b-instant', name: 'llama-3.1-8b-instant', description: 'Meta Llama 3.1 8B instant inference' },
-    { id: 'mixtral-8x7b-32768', name: 'mixtral-8x7b-32768', description: 'Mistral Mixtral 8x7B MoE model' },
-  ],
-};
+export const AVAILABLE_MODELS = STATIC_FALLBACK_MODELS;
 
-export const ALL_PROVIDERS: ProviderId[] = ['openai', 'gemini', 'claude', 'deepseek', 'groq'];
+export const ALL_PROVIDERS: ProviderId[] = ['openai', 'gemini', 'claude', 'deepseek', 'groq', 'mock'];
 
 class ProviderKeyStore {
   private memoryKeys: Map<ProviderId, string> = new Map();
@@ -64,6 +41,9 @@ class ProviderKeyStore {
   }
 
   public getKey(provider: ProviderId): string {
+    if (provider === 'mock') {
+      return 'mock-local-key';
+    }
     if (this.memoryKeys.has(provider)) {
       return this.memoryKeys.get(provider) || '';
     }
@@ -120,18 +100,7 @@ class ProviderKeyStore {
     if (typeof window !== 'undefined' && window.localStorage) {
       const stored = window.localStorage.getItem(MODEL_PREFIX + provider);
       if (stored) {
-        if (provider === 'gemini' && (stored.includes('2.0') || stored === 'gemini-1.5-flash')) {
-          this.setModel('gemini', 'gemini-3.8-flash');
-          return 'gemini-3.8-flash';
-        }
-        if (provider === 'groq' && (stored.includes('llama-3.1-8b') || !stored)) {
-          this.setModel('groq', 'llama-3.3-70b-versatile');
-          return 'llama-3.3-70b-versatile';
-        }
-        const validList = AVAILABLE_MODELS[provider]?.map((m) => m.id) || [];
-        if (validList.includes(stored)) {
-          return stored;
-        }
+        return stored;
       }
     }
     return DEFAULT_MODELS[provider] || '';
@@ -157,6 +126,29 @@ class ProviderKeyStore {
     }
   }
 
+  /**
+   * Request delay in seconds between consecutive calls to the same provider.
+   * Default: 1.5 seconds.
+   */
+  public getRequestDelay(): number {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const val = window.localStorage.getItem(DELAY_KEY);
+      if (val) {
+        const parsed = parseFloat(val);
+        if (!isNaN(parsed) && parsed >= 0) {
+          return parsed;
+        }
+      }
+    }
+    return 1.5;
+  }
+
+  public setRequestDelay(seconds: number): void {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(DELAY_KEY, String(Math.max(0, seconds)));
+    }
+  }
+
   public getConfigs(): Record<ProviderId, ProviderConfig> {
     const configs: Partial<Record<ProviderId, ProviderConfig>> = {};
 
@@ -173,7 +165,9 @@ class ProviderKeyStore {
             ? 'Claude'
             : p === 'deepseek'
             ? 'DeepSeek'
-            : 'Groq',
+            : p === 'groq'
+            ? 'Groq'
+            : 'Mock',
         enabled: this.isEnabled(p),
         apiKey: key,
         selectedModel: this.getModel(p),
@@ -188,7 +182,9 @@ class ProviderKeyStore {
     return Boolean(
       this.getKey('openai') ||
       this.getKey('gemini') ||
-      this.getKey('claude')
+      this.getKey('claude') ||
+      this.getKey('deepseek') ||
+      this.getKey('groq')
     );
   }
 }

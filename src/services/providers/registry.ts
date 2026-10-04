@@ -5,6 +5,7 @@ import { GeminiProvider } from './geminiProvider';
 import { ClaudeProvider } from './claudeProvider';
 import { DeepSeekProvider } from './deepseekProvider';
 import { GroqProvider } from './groqProvider';
+import { MockProvider } from './mockProvider';
 
 class ProviderRegistry {
   private providers: Map<ProviderId, AIProvider> = new Map();
@@ -15,6 +16,7 @@ class ProviderRegistry {
     this.register(new ClaudeProvider());
     this.register(new DeepSeekProvider());
     this.register(new GroqProvider());
+    this.register(new MockProvider());
   }
 
   public register(provider: AIProvider): void {

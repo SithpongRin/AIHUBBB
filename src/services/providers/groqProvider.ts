@@ -1,4 +1,6 @@
-import { AIProvider, ProviderRequest, ProviderResponse } from './types';
+import { AIProvider, ModelInfo, ProviderRequest, ProviderResponse } from './types';
+import { STATIC_FALLBACK_MODELS } from './modelUtils';
+import { fetchWithRetry, sanitizeMessage } from './withRetry';
 
 export class GroqProvider implements AIProvider {
   public id = 'groq' as const;
@@ -7,32 +9,78 @@ export class GroqProvider implements AIProvider {
   public defaultRoleName = 'Fast Synthesizer';
   public defaultModel = 'llama-3.3-70b-versatile';
 
-  public async validateConnection(apiKey: string): Promise<{ success: boolean; error?: string }> {
-    if (!apiKey) {
-      return { success: false, error: 'Groq API key is required.' };
+  public async listModels(apiKey: string): Promise<ModelInfo[]> {
+    if (!apiKey || !apiKey.trim()) return STATIC_FALLBACK_MODELS.groq;
+    const cleanKey = apiKey.trim();
+
+    // 1. Try serverless proxy first to avoid CORS
+    try {
+      const proxyRes = await fetch('/api/provider/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'groq', apiKey: cleanKey }),
+      });
+      if (proxyRes.ok) {
+        const data = await proxyRes.json();
+        if (Array.isArray(data.models) && data.models.length > 0) {
+          return data.models;
+        }
+      }
+    } catch {
+      // Serverless proxy unavailable, fallback to direct fetch
     }
 
+    // 2. Direct client fetch fallback
     try {
       const response = await fetch('https://api.groq.com/openai/v1/models', {
         method: 'GET',
         headers: {
-          'Authorization': `Bearer ${apiKey}`,
+          'Authorization': `Bearer ${cleanKey}`,
         },
       });
 
       if (!response.ok) {
-        if (response.status === 401) {
-          return { success: false, error: 'Groq authentication failed. Please verify your API key.' };
-        }
-        if (response.status === 429) {
-          return { success: false, error: 'Groq rate limit exceeded.' };
-        }
-        return { success: false, error: `Groq connection failed (Status ${response.status}).` };
+        return STATIC_FALLBACK_MODELS.groq;
       }
 
-      return { success: true };
+      const data = await response.json();
+      const rawList = Array.isArray(data.data) ? data.data : [];
+
+      const filtered = rawList
+        .filter((m: { id?: string }) => {
+          const id = (m.id || '').toLowerCase();
+          return (
+            !id.includes('whisper') &&
+            !id.includes('tts') &&
+            !id.includes('guard') &&
+            !id.includes('embed') &&
+            !id.includes('distil-whisper')
+          );
+        })
+        .map((m: { id: string }) => ({
+          id: m.id,
+          label: m.id,
+        }));
+
+      return filtered.length > 0 ? filtered : STATIC_FALLBACK_MODELS.groq;
+    } catch {
+      return STATIC_FALLBACK_MODELS.groq;
+    }
+  }
+
+  public async validateConnection(apiKey: string): Promise<{ success: boolean; error?: string; models?: ModelInfo[] }> {
+    if (!apiKey || !apiKey.trim()) {
+      return { success: false, error: 'Groq API key is required.' };
+    }
+
+    try {
+      const models = await this.listModels(apiKey);
+      if (models && models.length > 0) {
+        return { success: true, models };
+      }
+      return { success: false, error: 'No active Groq models available for this API key.' };
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Network error connecting to Groq.';
+      const msg = err instanceof Error ? sanitizeMessage(err.message) : 'Network error connecting to Groq.';
       return { success: false, error: msg };
     }
   }
@@ -50,53 +98,32 @@ export class GroqProvider implements AIProvider {
       { role: 'user', content: userPrompt },
     ];
 
-    let targetModel = model || this.defaultModel;
-    if (targetModel.includes('3.1-8b')) {
-      targetModel = 'llama-3.3-70b-versatile';
-    }
+    const targetModel = model || this.defaultModel;
 
     try {
-      const sendReq = async (m: string) => {
-        return fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const response = await fetchWithRetry(
+        'https://api.groq.com/openai/v1/chat/completions',
+        {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey.trim()}`,
           },
           body: JSON.stringify({
-            model: m,
+            model: targetModel,
             messages,
             temperature: 0.7,
           }),
-          signal,
-        });
-      };
-
-      let response = await sendReq(targetModel);
-
-      // If model not found or invalid on this account, retry with flagship llama-3.3-70b-versatile
-      if (!response.ok && (response.status === 400 || response.status === 404)) {
-        if (targetModel !== 'llama-3.3-70b-versatile') {
-          targetModel = 'llama-3.3-70b-versatile';
-          response = await sendReq(targetModel);
-        }
-      }
-
-      if (!response.ok) {
-        let errDetails = `Status ${response.status}`;
-        try {
-          const errData = await response.json();
-          if (errData?.error?.message) {
-            errDetails = errData.error.message;
-          }
-        } catch {
-          // ignore
-        }
-        throw new Error(`Groq API error: ${errDetails}`);
-      }
+        },
+        { signal }
+      );
 
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
+
+      if (!content && content !== '') {
+        throw new Error('Groq returned an empty response.');
+      }
 
       return {
         provider: 'groq',
@@ -108,7 +135,7 @@ export class GroqProvider implements AIProvider {
       if (err instanceof DOMException && err.name === 'AbortError') {
         throw new Error('Groq request was cancelled.');
       }
-      const msg = err instanceof Error ? err.message : 'Groq request failed';
+      const msg = err instanceof Error ? sanitizeMessage(err.message) : 'Groq request failed';
       throw new Error(msg);
     }
   }

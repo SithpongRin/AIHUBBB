@@ -11,6 +11,7 @@ export class SettingsService {
       default_rounds: 3,
       default_moderator: 'openai',
       theme: 'system',
+      request_delay_seconds: 1.5,
     };
 
     if (typeof window === 'undefined' || !window.localStorage) return defaultSettings;
@@ -54,7 +55,12 @@ export class SettingsService {
 
   public async updateSettings(
     userId: string,
-    updates: Partial<{ default_rounds: number; default_moderator: ProviderId; theme: 'light' | 'dark' | 'system' }>
+    updates: Partial<{
+      default_rounds: number;
+      default_moderator: ProviderId;
+      theme: 'light' | 'dark' | 'system';
+      request_delay_seconds: number;
+    }>
   ): Promise<UserSettings> {
     const current = await this.getSettings(userId);
     const updated: UserSettings = {
@@ -71,6 +77,7 @@ export class SettingsService {
           default_rounds: updated.default_rounds,
           default_moderator: updated.default_moderator,
           theme: updated.theme,
+          request_delay_seconds: updated.request_delay_seconds,
           updated_at: updated.updated_at,
         });
       } catch (err) {

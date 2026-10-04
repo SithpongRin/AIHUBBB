@@ -1,4 +1,4 @@
-export type ProviderId = 'openai' | 'gemini' | 'claude' | 'deepseek' | 'groq';
+export type ProviderId = 'openai' | 'gemini' | 'claude' | 'deepseek' | 'groq' | 'mock';
 
 export type DiscussionStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 
@@ -21,8 +21,15 @@ export interface UserSettings {
   default_rounds: number;
   default_moderator: ProviderId;
   theme: 'light' | 'dark' | 'system';
+  request_delay_seconds?: number;
   created_at?: string;
   updated_at?: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  label?: string;
+  description?: string;
 }
 
 export interface DiscussionFile {

@@ -4,67 +4,78 @@
 
 AIHUB is a modern multi-AI deliberation workspace where a user inputs **one** question, architectural dilemma, document analysis, or problem, and multiple frontier AI models automatically analyze, critique, debate, and synthesize it together.
 
-Users no longer need to manually copy and paste prompts and outputs between ChatGPT, Google Gemini, and Anthropic Claude. AIHUB serves as the orchestrator passing verified arguments between AI models across multiple structured rounds to produce an authoritative synthesized verdict.
+Users no longer need to manually copy and paste prompts and outputs between ChatGPT, Google Gemini, Anthropic Claude, and Groq. AIHUB serves as the orchestrator passing verified arguments between AI models across multiple structured rounds to produce an authoritative synthesized verdict.
 
 ---
 
 ## Architecture Flow
 
 ```text
-                    User Question
-                          │
-                          ▼
-                  Discussion Engine
-                          │
-          ┌───────────────┼───────────────┐
-          ▼               ▼               ▼
-     OpenAI (Lead)  Gemini (Alt)    Claude (Critic)
-          │               │               │
-          └───────────────┼───────────────┘
-                          ▼
-                    Cross Review
-                          │
-                          ▼
-                        Debate
-                          │
-                          ▼
-                  Final AI Moderator
-                          │
-                          ▼
-                    Final Answer
+                                User Question
+                                      │
+                                      ▼
+                           Deliberation Orchestrator
+                                      │
+         ┌────────────────────────────┼────────────────────────────┐
+         ▼                            ▼                            ▼
+   OpenAI (Lead)                Gemini (Alt)                 Groq / Claude
+   [Per-Provider Queue]         [Per-Provider Queue]         [Per-Provider Queue]
+         │                            │                            │
+         └────────────────────────────┼────────────────────────────┘
+                                      ▼
+                            Round 2: Cross Review
+                           (Trimmed token budgets)
+                                      │
+                                      ▼
+                            Round 3: Final Debate
+                                      │
+                                      ▼
+                             Final AI Moderator
+                     (Synthesizes & notes missing voices)
+                                      │
+                                      ▼
+                              Consensus Answer
 ```
 
 ---
 
 ## Key Features
 
-- **Supabase Authentication with Google OAuth**: Fast, secure user login with user profile synchronization.
-- **Supabase PostgreSQL & Storage**: Strict Row Level Security (RLS) guaranteeing users only access their own discussions, files, and settings.
-- **Bring Your Own Key (BYOK)**: No centralized AI API fees or shared tokens. Users provide their own OpenAI, Gemini, and Claude API keys.
-- **Zero-Persistence Key Security**: API keys reside solely in browser session memory and are dispatched via HTTPS only for execution. Keys are **never** stored in the Supabase database, disk, logs, or analytics.
-- **Provider Abstraction Architecture**: Standardized provider interface (`AIProvider`) decoupling the discussion UI from model-specific SDK nuances; easily extensible to DeepSeek, Mistral, Grok, etc.
+- **Dynamic Model Discovery (`listModels`)**:
+  - Connects to Groq, Gemini, OpenAI, Claude, and DeepSeek via serverless proxy (`/api/provider/models.ts`).
+  - Fetches the exact real models accessible by your API key and presents an intuitive dropdown in Settings.
+  - Discussion starts automatically validate selected models against active lists, auto-selecting sensible defaults (prioritizing `flash`, `instant`, `mini`, `haiku`) if a model is deprecated or unavailable.
+- **Auto-Detect Provider from API Key**:
+  - Type or paste an API key into the single "Add API key" input.
+  - Automatically identifies the provider by key prefix (`gsk_` -> Groq, `sk-ant-` -> Claude, `AIza` -> Gemini, `sk-` -> OpenAI/DeepSeek).
+  - Strict security: only queries candidate providers matched by the prefix.
+- **Rate Limit & Quota Resilience (`withRetry`)**:
+  - Exponential backoff with random jitter (2s, 4s, 8s, up to 20s) for HTTP 429 and 5xx errors.
+  - Respects HTTP `Retry-After` response headers.
+  - Fails fast on 400, 401, 403, and 404 with friendly, sanitized messages.
+  - Supports cancelable `AbortController` execution without sleep lag.
+- **Per-Provider Serialization Queue**:
+  - Enforces at most 1 in-flight request per provider with a configurable request delay (default 1.5s, adjustable from 0.5s to 5.0s in Preferences).
+  - Independent providers run concurrently in full parallel without blocking one another.
+- **Graceful Fallback & In-Place Retry**:
+  - If a provider fails after retries, deliberation continues with active models while the moderator notes the missing voice.
+  - Automatic quota fallback to lighter models (e.g. Pro -> Flash, 70B -> 8B/instant) before giving up.
+  - "Retry this response" button on failed cards to regenerate specific messages directly in the thread.
+- **Bring Your Own Key (BYOK) Security**:
+  - API keys reside solely in browser session memory and are dispatched via HTTPS only for execution.
+  - Keys are **never** stored in Supabase database tables, disk, logs, or analytics.
 - **Specialized AI Roles**:
   - **OpenAI (Lead Analyst)**: Builds initial solutions, identifies core assumptions, and establishes foundational models.
   - **Gemini (Alternative Analyst)**: Explores alternative paradigms, challenges defaults, and identifies blind spots.
   - **Claude (Critical Reviewer)**: Uncovers subtle vulnerabilities, stress-tests edge cases, and critiques trade-offs.
-- **Three-Stage Deliberation Engine**:
-  - **Round 1 (Independent Analysis)**: Parallel analysis without cross-model visibility.
-  - **Round 2 (Cross Review)**: Peer critique where each model challenges other models' arguments.
-  - **Round 3 (Final Debate)**: Consolidation of positions, trade-off analysis, and final defenses.
-- **Final AI Moderator Synthesis**:
-  - Direct Answer
-  - Key Reasoning
-  - Points of Agreement
-  - Important Disagreements & Trade-offs
-  - Best Conclusion
-  - Practical Recommendation
-  - Remaining Uncertainty
+  - **Groq (Fast Synthesizer)**: High-throughput LPU inference using Meta Llama 3.3 and Mixtral.
+  - **DeepSeek (Deep Reasoning Specialist)**: Algorithmic and architectural analysis using DeepSeek-V3 and R1.
+  - **Mock AI (Simulation Engine)**: Zero-cost simulated offline mode for testing and development.
 - **Document Attachments (Untrusted Input Sandboxing)**:
   - Upload PDF, TXT, MD, CSV, DOCX.
   - Text extraction with strict prompt isolation to neutralize prompt injection risks.
-- **Simulated AI Engine (Mock Mode)**: Zero-cost offline testing mode to validate multi-round workflows without consuming real API credits.
 - **Theme Support**: Seamless Light, Dark, and System mode switching.
-- **Responsive Workspace**: Mobile-first layout designed for smartphones, tablets, and wide displays.
+- **Strict UI Cleanliness**: No emojis in UI (exclusively Lucide icons).
 
 ---
 
@@ -73,7 +84,7 @@ Users no longer need to manually copy and paste prompts and outputs between Chat
 ### 1. Install Dependencies
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 ```
 
 ### 2. Configure Environment
@@ -103,59 +114,14 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 
 ---
 
-## Supabase Database & Auth Setup
-
-1. Create a project at [supabase.com](https://supabase.com).
-2. Go to **Authentication -> Providers** and enable **Google**. Configure your Google Cloud OAuth Client ID and Secret.
-3. Open the **SQL Editor** in your Supabase dashboard.
-4. Execute the SQL script located in:
-   ```text
-   supabase/migrations/20261004_init.sql
-   ```
-   This creates:
-   - `profiles` table with automatic user signup trigger.
-   - `discussions` table with foreign key cascading.
-   - `discussion_messages` table scoped to discussion ownership.
-   - `user_settings` table (never stores keys).
-   - `files` table for document attachments.
-   - Complete Row Level Security (RLS) policies for all tables.
-5. Create a storage bucket named `discussion-files` in **Storage**.
-
----
-
 ## Bring Your Own Key (BYOK) Security
 
 AIHUB enforces zero-trust credential hygiene:
 
 - API keys are **never** committed to Git or pushed to GitHub.
 - API keys are **never** stored in Supabase database tables or file storage.
-- API keys are held strictly in memory / session storage and sent directly to provider APIs (or Vercel Serverless proxy).
+- API keys are held strictly in session storage and sent directly to provider APIs (or Vercel Serverless proxy).
 - Users can clear their keys at any time from **Settings -> AI Providers**.
-
----
-
-## GitHub & Vercel Deployment
-
-### Pushing to GitHub
-
-```bash
-git init
-git add .
-git commit -m "feat: AIHUB multi-AI deliberation platform"
-git branch -M main
-git remote add origin https://github.com/<your-username>/aihub.git
-git push -u origin main
-```
-
-### Deploying to Vercel
-
-AIHUB is engineered to be deployed through Vercel:
-
-1. Import your GitHub repository into Vercel.
-2. Under **Environment Variables**, add:
-   - `VITE_SUPABASE_URL`
-   - `VITE_SUPABASE_ANON_KEY`
-3. Click **Deploy**. Vercel will automatically build the React Vite application and deploy the API endpoints in `/api/`.
 
 ---
 

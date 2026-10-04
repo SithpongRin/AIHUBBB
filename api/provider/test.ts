@@ -66,6 +66,36 @@ export default async function handler(req: any, res: any) {
       return res.status(200).json({ success: true });
     }
 
+    if (provider === 'groq') {
+      const response = await fetch('https://api.groq.com/openai/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({ success: false, error: 'Groq authentication failed. Invalid API key.' });
+        }
+        return res.status(response.status).json({ success: false, error: `Groq connection failed (Status ${response.status})` });
+      }
+      return res.status(200).json({ success: true });
+    }
+
+    if (provider === 'deepseek') {
+      const response = await fetch('https://api.deepseek.com/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!response.ok) {
+        if (response.status === 401) {
+          return res.status(401).json({ success: false, error: 'DeepSeek authentication failed. Invalid API key.' });
+        }
+        return res.status(response.status).json({ success: false, error: `DeepSeek connection failed (Status ${response.status})` });
+      }
+      return res.status(200).json({ success: true });
+    }
+
+    if (provider === 'mock') {
+      return res.status(200).json({ success: true });
+    }
+
     return res.status(400).json({ success: false, error: `Unknown provider: ${provider}` });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unknown server error';

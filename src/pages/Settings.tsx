@@ -17,12 +17,17 @@ import {
   RefreshCw,
   Cpu,
   Zap,
+  HelpCircle,
+  Clock,
+  ArrowRight,
 } from 'lucide-react';
-import { ProviderId, UserProfile, UserSettings } from '@/types';
-import { AVAILABLE_MODELS, providerKeyStore } from '@/services/providers/keyStore';
+import { ModelInfo, ProviderId, UserProfile } from '@/types';
+import { ALL_PROVIDERS, DEFAULT_MODELS, providerKeyStore } from '@/services/providers/keyStore';
 import { providerRegistry } from '@/services/providers/registry';
 import { isSupabaseConfigured } from '@/services/supabase/client';
 import { settingsService } from '@/services/settings/settingsService';
+import { detectProvider } from '@/services/providers/detectProvider';
+import { pickSensibleDefaultModel, STATIC_FALLBACK_MODELS } from '@/services/providers/modelUtils';
 
 interface SettingsProps {
   user: UserProfile;
@@ -37,6 +42,14 @@ export const SettingsView: React.FC<SettingsProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'providers' | 'preferences' | 'database'>('providers');
 
+  // Quick Add / Auto-Detect State
+  const [quickKeyInput, setQuickKeyInput] = useState('');
+  const [selectedTargetProvider, setSelectedTargetProvider] = useState<ProviderId>('openai');
+  const [quickAddStatus, setQuickAddStatus] = useState<{
+    state: 'idle' | 'detecting' | 'validating' | 'success' | 'error';
+    message?: string;
+  }>({ state: 'idle' });
+
   // Provider states
   const [keys, setKeys] = useState<Record<ProviderId, string>>({
     openai: providerKeyStore.getKey('openai'),
@@ -44,6 +57,7 @@ export const SettingsView: React.FC<SettingsProps> = ({
     claude: providerKeyStore.getKey('claude'),
     deepseek: providerKeyStore.getKey('deepseek'),
     groq: providerKeyStore.getKey('groq'),
+    mock: providerKeyStore.getKey('mock'),
   });
 
   const [models, setModels] = useState<Record<ProviderId, string>>({
@@ -52,6 +66,16 @@ export const SettingsView: React.FC<SettingsProps> = ({
     claude: providerKeyStore.getModel('claude'),
     deepseek: providerKeyStore.getModel('deepseek'),
     groq: providerKeyStore.getModel('groq'),
+    mock: providerKeyStore.getModel('mock'),
+  });
+
+  const [customModelMode, setCustomModelMode] = useState<Record<ProviderId, boolean>>({
+    openai: false,
+    gemini: false,
+    claude: false,
+    deepseek: false,
+    groq: false,
+    mock: false,
   });
 
   const [enabled, setEnabled] = useState<Record<ProviderId, boolean>>({
@@ -60,6 +84,7 @@ export const SettingsView: React.FC<SettingsProps> = ({
     claude: providerKeyStore.isEnabled('claude'),
     deepseek: providerKeyStore.isEnabled('deepseek'),
     groq: providerKeyStore.isEnabled('groq'),
+    mock: providerKeyStore.isEnabled('mock'),
   });
 
   const [showKey, setShowKey] = useState<Record<ProviderId, boolean>>({
@@ -68,6 +93,7 @@ export const SettingsView: React.FC<SettingsProps> = ({
     claude: false,
     deepseek: false,
     groq: false,
+    mock: false,
   });
 
   const [testStatus, setTestStatus] = useState<
@@ -78,67 +104,59 @@ export const SettingsView: React.FC<SettingsProps> = ({
     claude: { state: 'idle' },
     deepseek: { state: 'idle' },
     groq: { state: 'idle' },
+    mock: { state: 'idle' },
   });
 
   // Dynamically fetched models from API keys
-  const [dynamicModels, setDynamicModels] = useState<
-    Record<ProviderId, { id: string; name: string; description: string }[]>
-  >({
-    openai: AVAILABLE_MODELS.openai,
-    gemini: AVAILABLE_MODELS.gemini,
-    claude: AVAILABLE_MODELS.claude,
-    deepseek: AVAILABLE_MODELS.deepseek,
-    groq: AVAILABLE_MODELS.groq,
+  const [dynamicModels, setDynamicModels] = useState<Record<ProviderId, ModelInfo[]>>({
+    openai: STATIC_FALLBACK_MODELS.openai,
+    gemini: STATIC_FALLBACK_MODELS.gemini,
+    claude: STATIC_FALLBACK_MODELS.claude,
+    deepseek: STATIC_FALLBACK_MODELS.deepseek,
+    groq: STATIC_FALLBACK_MODELS.groq,
+    mock: STATIC_FALLBACK_MODELS.mock,
   });
 
   // General settings
   const [defaultRounds, setDefaultRounds] = useState(3);
   const [defaultModerator, setDefaultModerator] = useState<ProviderId>('openai');
+  const [requestDelay, setRequestDelay] = useState<number>(() => providerKeyStore.getRequestDelay());
   const [savedNotice, setSavedNotice] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
 
-  // Auto-fetch real models from Gemini key on load if key exists
+  // Auto-fetch real models on load for all configured keys
   useEffect(() => {
-    const geminiKey = keys.gemini;
-    if (geminiKey) {
-      const p = providerRegistry.get('gemini');
-      if (p && 'fetchAvailableModels' in p && typeof (p as any).fetchAvailableModels === 'function') {
-        (p as any).fetchAvailableModels(geminiKey).then((fetched: { id: string; name: string; description: string }[]) => {
+    ALL_PROVIDERS.forEach(async (p) => {
+      const key = keys[p];
+      if (key && p !== 'mock') {
+        try {
+          const pInstance = providerRegistry.get(p);
+          const fetched = await pInstance.listModels(key);
           if (Array.isArray(fetched) && fetched.length > 0) {
-            setDynamicModels((prev) => ({ ...prev, gemini: fetched }));
-            const current = models.gemini;
-            if (!fetched.some((m) => m.id === current)) {
-              const best = fetched.find((m) => m.id.includes('3.8')) || fetched[0];
-              if (best) {
-                handleModelChange('gemini', best.id);
-              }
-            }
+            setDynamicModels((prev) => ({ ...prev, [p]: fetched }));
           }
-        });
+        } catch {
+          // ignore error on mount
+        }
       }
-    }
+    });
   }, []);
+
+  // Update quick add candidate when quick key changes
+  const detected = detectProvider(quickKeyInput);
+
+  useEffect(() => {
+    if (detected.detectedProvider) {
+      setSelectedTargetProvider(detected.detectedProvider);
+    } else if (detected.candidateProviders.length > 0) {
+      setSelectedTargetProvider(detected.candidateProviders[0]);
+    }
+  }, [quickKeyInput]);
 
   const handleKeyChange = (provider: ProviderId, value: string) => {
     setKeys((prev) => ({ ...prev, [provider]: value }));
     providerKeyStore.setKey(provider, value);
     setTestStatus((prev) => ({ ...prev, [provider]: { state: 'idle' } }));
-
-    // When Gemini key changes, dynamically fetch models for the new key
-    if (provider === 'gemini' && value.trim()) {
-      const p = providerRegistry.get('gemini');
-      if (p && 'fetchAvailableModels' in p && typeof (p as any).fetchAvailableModels === 'function') {
-        (p as any).fetchAvailableModels(value.trim()).then((fetched: { id: string; name: string; description: string }[]) => {
-          if (Array.isArray(fetched) && fetched.length > 0) {
-            setDynamicModels((prev) => ({ ...prev, gemini: fetched }));
-            const best = fetched.find((m) => m.id.includes('3.8')) || fetched[0];
-            if (best) {
-              handleModelChange('gemini', best.id);
-            }
-          }
-        });
-      }
-    }
   };
 
   const handleModelChange = (provider: ProviderId, model: string) => {
@@ -158,6 +176,28 @@ export const SettingsView: React.FC<SettingsProps> = ({
     setTestStatus((prev) => ({ ...prev, [provider]: { state: 'idle' } }));
   };
 
+  const handleRefreshModels = async (provider: ProviderId) => {
+    const key = keys[provider];
+    if (!key) return;
+
+    try {
+      const pInstance = providerRegistry.get(provider);
+      const fetched = await pInstance.listModels(key);
+      if (fetched && fetched.length > 0) {
+        setDynamicModels((prev) => ({ ...prev, [provider]: fetched }));
+        const current = models[provider];
+        if (!fetched.some((m) => m.id === current)) {
+          const sensible = pickSensibleDefaultModel(fetched);
+          if (sensible) {
+            handleModelChange(provider, sensible);
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const handleTestConnection = async (provider: ProviderId) => {
     const key = keys[provider];
     if (!key) {
@@ -174,15 +214,15 @@ export const SettingsView: React.FC<SettingsProps> = ({
       const pInstance = providerRegistry.get(provider);
       const res = await pInstance.validateConnection(key, models[provider]);
       if (res.success) {
-        // If models were returned from the API key, update the dropdown!
-        if ('models' in res && Array.isArray((res as any).models) && (res as any).models.length > 0) {
-          const fetched = (res as any).models;
+        // Automatically fetch and update models
+        const fetched = await pInstance.listModels(key);
+        if (fetched && fetched.length > 0) {
           setDynamicModels((prev) => ({ ...prev, [provider]: fetched }));
           const current = models[provider];
-          if (!fetched.some((m: { id: string }) => m.id === current)) {
-            const best = fetched.find((m: { id: string }) => m.id.includes('3.8')) || fetched[0];
+          if (!fetched.some((m) => m.id === current)) {
+            const best = pickSensibleDefaultModel(fetched);
             if (best) {
-              handleModelChange(provider, best.id);
+              handleModelChange(provider, best);
             }
           }
         }
@@ -205,14 +245,101 @@ export const SettingsView: React.FC<SettingsProps> = ({
     }
   };
 
+  // Quick Add Connect & Discover
+  const handleQuickAddConnect = async () => {
+    const cleanKey = quickKeyInput.trim();
+    if (!cleanKey) return;
+
+    const target = selectedTargetProvider;
+    setQuickAddStatus({ state: 'validating' });
+
+    try {
+      const pInstance = providerRegistry.get(target);
+      const res = await pInstance.validateConnection(cleanKey);
+
+      if (!res.success) {
+        setQuickAddStatus({
+          state: 'error',
+          message: res.error || `Failed to connect to ${pInstance.name}. Verify your API key.`,
+        });
+        return;
+      }
+
+      // 1. Save key to session/memory store (BYOK: never saved to Supabase database)
+      providerKeyStore.setKey(target, cleanKey);
+      setKeys((prev) => ({ ...prev, [target]: cleanKey }));
+      setEnabled((prev) => ({ ...prev, [target]: true }));
+      providerKeyStore.setEnabled(target, true);
+
+      // 2. Discover models dynamically
+      const fetched = await pInstance.listModels(cleanKey);
+      if (fetched && fetched.length > 0) {
+        setDynamicModels((prev) => ({ ...prev, [target]: fetched }));
+        const sensible = pickSensibleDefaultModel(fetched);
+        if (sensible) {
+          providerKeyStore.setModel(target, sensible);
+          setModels((prev) => ({ ...prev, [target]: sensible }));
+        }
+      }
+
+      setQuickAddStatus({
+        state: 'success',
+        message: `Successfully connected to ${pInstance.name}! Available models discovered.`,
+      });
+      setQuickKeyInput('');
+      setTimeout(() => {
+        setQuickAddStatus({ state: 'idle' });
+      }, 3500);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Connection failed';
+      setQuickAddStatus({ state: 'error', message: msg });
+    }
+  };
+
   const handleSavePreferences = async () => {
+    providerKeyStore.setRequestDelay(requestDelay);
     await settingsService.updateSettings(user.id, {
       default_rounds: defaultRounds,
       default_moderator: defaultModerator,
       theme,
+      request_delay_seconds: requestDelay,
     });
     setSavedNotice(true);
     setTimeout(() => setSavedNotice(false), 2500);
+  };
+
+  const getProviderIcon = (p: ProviderId) => {
+    switch (p) {
+      case 'openai':
+        return <Brain className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />;
+      case 'gemini':
+        return <Sparkles className="w-5 h-5 text-blue-600 dark:text-blue-400" />;
+      case 'claude':
+        return <ShieldCheck className="w-5 h-5 text-amber-600 dark:text-amber-400" />;
+      case 'groq':
+        return <Zap className="w-5 h-5 text-orange-600 dark:text-orange-400" />;
+      case 'deepseek':
+        return <Cpu className="w-5 h-5 text-cyan-600 dark:text-cyan-400" />;
+      case 'mock':
+        return <Sliders className="w-5 h-5 text-purple-600 dark:text-purple-400" />;
+    }
+  };
+
+  const getProviderBadge = (p: ProviderId) => {
+    switch (p) {
+      case 'openai':
+        return 'Lead Analyst';
+      case 'gemini':
+        return 'Alternative Analyst';
+      case 'claude':
+        return 'Critical Reviewer';
+      case 'groq':
+        return 'Fast Synthesizer';
+      case 'deepseek':
+        return 'Deep Reasoning';
+      case 'mock':
+        return 'Simulation Mode';
+    }
   };
 
   const sqlMigrationSchema = `-- Supabase Schema for AIHUB
@@ -258,6 +385,7 @@ CREATE TABLE IF NOT EXISTS public.user_settings (
   default_rounds INT DEFAULT 3,
   default_moderator TEXT DEFAULT 'openai',
   theme TEXT DEFAULT 'system',
+  request_delay_seconds NUMERIC DEFAULT 1.5,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -282,7 +410,7 @@ CREATE TABLE IF NOT EXISTS public.files (
           Settings & Configuration
         </h1>
         <p className="mt-1 text-xs text-zinc-500">
-          Manage your AI provider API keys, deliberation defaults, and system connections.
+          Manage your AI provider API keys, dynamic models, deliberation rates, and system preferences.
         </p>
       </div>
 
@@ -297,7 +425,7 @@ CREATE TABLE IF NOT EXISTS public.files (
           }`}
         >
           <KeyRound className="w-3.5 h-3.5" />
-          <span>AI Providers (BYOK)</span>
+          <span>AI Providers & Models</span>
         </button>
 
         <button
@@ -309,7 +437,7 @@ CREATE TABLE IF NOT EXISTS public.files (
           }`}
         >
           <Sliders className="w-3.5 h-3.5" />
-          <span>Preferences & Theme</span>
+          <span>Preferences & Rate Limits</span>
         </button>
 
         <button
@@ -336,574 +464,345 @@ CREATE TABLE IF NOT EXISTS public.files (
                 Zero-Persistence Key Security (BYOK)
               </span>
               <p className="text-emerald-800 dark:text-emerald-300/90 leading-relaxed">
-                Your API keys are stored in browser session memory and used exclusively to send your prompts to the provider. Keys are NEVER saved to the Supabase database, disk, or logs.
+                API keys are kept strictly in browser session memory and dispatched per request over HTTPS. Keys are NEVER stored in the Supabase database, disk, or logs.
               </p>
+            </div>
+          </div>
+
+          {/* SINGLE "ADD API KEY" AUTO-DETECTION FIELD */}
+          <div className="p-5 rounded-2xl border border-indigo-200 dark:border-indigo-900/50 bg-gradient-to-br from-indigo-50/50 via-white to-zinc-50 dark:from-indigo-950/20 dark:via-zinc-900 dark:to-zinc-900/80 space-y-4 shadow-xs">
+            <div className="flex items-center justify-between pb-2 border-b border-indigo-100 dark:border-indigo-950">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600 text-white flex items-center justify-center">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-zinc-900 dark:text-white">
+                    Quick Connect API Key (Auto-Detect)
+                  </h3>
+                  <p className="text-[11px] text-zinc-500">
+                    Paste any provider API key to automatically identify the service and retrieve its available models.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="relative">
+                <input
+                  type="password"
+                  value={quickKeyInput}
+                  onChange={(e) => setQuickKeyInput(e.target.value)}
+                  placeholder="Paste your API key here (e.g. gsk_..., sk-ant-..., AIza..., sk-...)"
+                  className="w-full px-4 py-2.5 pr-10 text-xs font-mono rounded-xl border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                />
+              </div>
+
+              {quickKeyInput.trim() && (
+                <div className="p-3 rounded-xl bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    {getProviderIcon(selectedTargetProvider)}
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                          {detected.isUnknown ? 'Provider:' : `Detected: ${detected.displayName}`}
+                        </span>
+                        {detected.detectedProvider && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                            Auto-matched by prefix
+                          </span>
+                        )}
+                        {detected.isAmbiguous && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                            Ambiguous prefix
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        {detected.isUnknown
+                          ? 'Unrecognized key prefix. Please pick the corresponding provider manually.'
+                          : 'You can manually change the provider before connecting.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <label className="text-[11px] text-zinc-500 font-medium">Provider:</label>
+                    <select
+                      value={selectedTargetProvider}
+                      onChange={(e) => setSelectedTargetProvider(e.target.value as ProviderId)}
+                      className="px-2.5 py-1.5 rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-700 text-xs text-zinc-900 dark:text-zinc-100 font-medium cursor-pointer"
+                    >
+                      {ALL_PROVIDERS.map((p) => (
+                        <option key={p} value={p}>
+                          {p === 'openai'
+                            ? 'OpenAI'
+                            : p === 'gemini'
+                            ? 'Google Gemini'
+                            : p === 'claude'
+                            ? 'Anthropic Claude'
+                            : p === 'groq'
+                            ? 'Groq'
+                            : p === 'deepseek'
+                            ? 'DeepSeek'
+                            : 'Mock Simulation'}
+                        </option>
+                      ))}
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={handleQuickAddConnect}
+                      disabled={quickAddStatus.state === 'validating'}
+                      className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50"
+                    >
+                      {quickAddStatus.state === 'validating' ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Connecting...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>Connect & Fetch Models</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {quickAddStatus.message && (
+                <div
+                  className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                    quickAddStatus.state === 'success'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                      : 'bg-rose-50 dark:bg-rose-950/30 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-800'
+                  }`}
+                >
+                  {quickAddStatus.state === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <XCircle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{quickAddStatus.message}</span>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Provider Cards */}
           <div className="space-y-4">
-            {/* 1. OpenAI */}
-            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-emerald-500/10 text-emerald-600 flex items-center justify-center">
-                    <Brain className="w-5 h-5" />
+            {ALL_PROVIDERS.map((p) => {
+              const isEnabled = enabled[p];
+              const pKey = keys[p];
+              const pModel = models[p];
+              const status = testStatus[p];
+              const availableList = dynamicModels[p] || [];
+              const isCustom = customModelMode[p] || !availableList.some((m) => m.id === pModel);
+
+              const pName =
+                p === 'openai'
+                  ? 'OpenAI'
+                  : p === 'gemini'
+                  ? 'Google Gemini'
+                  : p === 'claude'
+                  ? 'Anthropic Claude'
+                  : p === 'groq'
+                  ? 'Groq'
+                  : p === 'deepseek'
+                  ? 'DeepSeek'
+                  : 'Mock Simulator';
+
+              return (
+                <div
+                  key={p}
+                  className={`p-5 rounded-2xl border transition-all ${
+                    isEnabled
+                      ? 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-xs'
+                      : 'border-zinc-200/60 dark:border-zinc-800/60 bg-zinc-50/50 dark:bg-zinc-900/40 opacity-75'
+                  }`}
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-zinc-100 dark:bg-zinc-800 flex items-center justify-center">
+                        {getProviderIcon(p)}
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-sm text-zinc-900 dark:text-white">{pName}</h3>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400">
+                            {getProviderBadge(p)}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-zinc-400">
+                          {p === 'groq'
+                            ? 'Ultra-Fast LPUs (Meta Llama & Mixtral models)'
+                            : p === 'gemini'
+                            ? 'Google Multimodal API (Generative Language API)'
+                            : p === 'claude'
+                            ? 'Anthropic Messages API'
+                            : p === 'deepseek'
+                            ? 'DeepSeek Reasoning & Chat API'
+                            : p === 'mock'
+                            ? 'Simulated AI engine for testing without API keys'
+                            : 'OpenAI Chat Completions API'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={isEnabled}
+                          onChange={() => handleToggleEnabled(p)}
+                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
+                        />
+                        <span>Enabled</span>
+                      </label>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">OpenAI</h3>
-                    <p className="text-[11px] text-zinc-400">Designated Lead Analyst</p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
+                    {/* Key Input */}
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                        {pName} API Key
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showKey[p] ? 'text' : 'password'}
+                          value={pKey}
+                          onChange={(e) => handleKeyChange(p, e.target.value)}
+                          placeholder={p === 'mock' ? 'Mock key not required' : `Enter ${pName} API key`}
+                          disabled={p === 'mock'}
+                          className="w-full px-3 py-2 pr-10 text-xs font-mono rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden disabled:opacity-50"
+                        />
+                        {p !== 'mock' && (
+                          <button
+                            type="button"
+                            onClick={() => setShowKey((prev) => ({ ...prev, [p]: !prev[p] }))}
+                            className="absolute right-2.5 top-2.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 cursor-pointer"
+                          >
+                            {showKey[p] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Model Dropdown & Custom Option */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                          Selected Model
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleRefreshModels(p)}
+                            disabled={!pKey}
+                            className="text-[11px] text-zinc-500 hover:text-indigo-600 dark:hover:text-indigo-400 flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                            title="Refetch available models from API"
+                          >
+                            <RefreshCw className="w-3 h-3" />
+                            <span>Refresh</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCustomModelMode((prev) => ({ ...prev, [p]: !isCustom }))}
+                            className="text-[11px] text-zinc-500 hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer"
+                          >
+                            {isCustom ? 'Show dropdown' : 'Custom model'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {isCustom ? (
+                        <input
+                          type="text"
+                          value={pModel}
+                          onChange={(e) => handleModelChange(p, e.target.value)}
+                          placeholder="Type custom model id..."
+                          className="w-full px-3 py-2 text-xs font-mono rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden"
+                        />
+                      ) : (
+                        <select
+                          value={pModel}
+                          onChange={(e) => handleModelChange(p, e.target.value)}
+                          className="w-full px-3 py-2 text-xs rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 focus:ring-2 focus:ring-indigo-500 focus:outline-hidden cursor-pointer"
+                        >
+                          {availableList.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label || m.id}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <p className="text-[10px] text-zinc-500">
+                        {availableList.length > 0
+                          ? `${availableList.length} models discovered for this key`
+                          : 'Static fallback models'}
+                      </p>
+                    </div>
                   </div>
-                </div>
 
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enabled.openai}
-                      onChange={() => handleToggleEnabled('openai')}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
-                    />
-                    <span>Enabled</span>
-                  </label>
-                </div>
-              </div>
+                  {/* Actions & Status */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-zinc-100 dark:border-zinc-800/80 mt-4">
+                    <div className="flex items-center gap-2">
+                      {status.state === 'testing' && (
+                        <span className="flex items-center gap-1.5 text-xs text-zinc-500">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Validating connection...</span>
+                        </span>
+                      )}
+                      {status.state === 'success' && (
+                        <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>{status.message || 'Connected successfully'}</span>
+                        </span>
+                      )}
+                      {status.state === 'error' && (
+                        <span className="flex items-center gap-1.5 text-xs text-rose-500 font-medium">
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>{status.message}</span>
+                        </span>
+                      )}
+                    </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {/* Key Input */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    OpenAI API Key
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showKey.openai ? 'text' : 'password'}
-                      value={keys.openai}
-                      onChange={(e) => handleKeyChange('openai', e.target.value)}
-                      placeholder="sk-..."
-                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKey((prev) => ({ ...prev, openai: !prev.openai }))}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-                    >
-                      {showKey.openai ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                {/* Model Selector */}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Model
-                  </label>
-                  <select
-                    value={models.openai}
-                    onChange={(e) => handleModelChange('openai', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {AVAILABLE_MODELS.openai.map((m: { id: string; name: string; description: string }) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} — {m.description}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Actions & Feedback */}
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleTestConnection('openai')}
-                    disabled={testStatus.openai.state === 'testing'}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-                  >
-                    {testStatus.openai.state === 'testing' ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3" />
-                    )}
-                    <span>Test Connection</span>
-                  </button>
-
-                  {keys.openai && (
-                    <button
-                      onClick={() => handleClearKey('openai')}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                    >
-                      Clear Key
-                    </button>
-                  )}
-                </div>
-
-                {testStatus.openai.state === 'success' && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Connection successful</span>
-                  </span>
-                )}
-
-                {testStatus.openai.state === 'error' && (
-                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>{testStatus.openai.message || 'Connection failed'}</span>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* 2. Gemini */}
-            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-blue-500/10 text-blue-600 flex items-center justify-center">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">Google Gemini</h3>
-                    <p className="text-[11px] text-zinc-400">Designated Alternative Analyst</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enabled.gemini}
-                      onChange={() => handleToggleEnabled('gemini')}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
-                    />
-                    <span>Enabled</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Gemini API Key
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showKey.gemini ? 'text' : 'password'}
-                      value={keys.gemini}
-                      onChange={(e) => handleKeyChange('gemini', e.target.value)}
-                      placeholder="AIzaSy..."
-                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKey((prev) => ({ ...prev, gemini: !prev.gemini }))}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-                    >
-                      {showKey.gemini ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                      Model
-                    </label>
-                    {dynamicModels.gemini && dynamicModels.gemini.length > 0 && (
-                      <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
-                        Synced from API key
-                      </span>
-                    )}
-                  </div>
-                  <select
-                    value={models.gemini}
-                    onChange={(e) => handleModelChange('gemini', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {(dynamicModels.gemini?.length > 0 ? dynamicModels.gemini : AVAILABLE_MODELS.gemini).map(
-                      (m: { id: string; name: string; description: string }) => (
-                        <option key={m.id} value={m.id}>
-                          {m.name} — {m.description}
-                        </option>
-                      )
-                    )}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleTestConnection('gemini')}
-                    disabled={testStatus.gemini.state === 'testing'}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-                  >
-                    {testStatus.gemini.state === 'testing' ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3" />
-                    )}
-                    <span>Test Connection</span>
-                  </button>
-
-                  {keys.gemini && (
-                    <button
-                      onClick={() => handleClearKey('gemini')}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                    >
-                      Clear Key
-                    </button>
-                  )}
-                </div>
-
-                {testStatus.gemini.state === 'success' && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Connection successful</span>
-                  </span>
-                )}
-
-                {testStatus.gemini.state === 'error' && (
-                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>{testStatus.gemini.message || 'Connection failed'}</span>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* 3. Claude */}
-            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-amber-500/10 text-amber-600 flex items-center justify-center">
-                    <ShieldCheck className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">Anthropic Claude</h3>
-                    <p className="text-[11px] text-zinc-400">Designated Critical Reviewer</p>
+                    <div className="flex items-center gap-2">
+                      {pKey && p !== 'mock' && (
+                        <button
+                          type="button"
+                          onClick={() => handleClearKey(p)}
+                          className="px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-[11px] text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                        >
+                          Clear Key
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleTestConnection(p)}
+                        disabled={status.state === 'testing'}
+                        className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 text-white dark:text-zinc-950 font-semibold text-[11px] transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        Test Connection
+                      </button>
+                    </div>
                   </div>
                 </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enabled.claude}
-                      onChange={() => handleToggleEnabled('claude')}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
-                    />
-                    <span>Enabled</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Anthropic API Key
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showKey.claude ? 'text' : 'password'}
-                      value={keys.claude}
-                      onChange={(e) => handleKeyChange('claude', e.target.value)}
-                      placeholder="sk-ant-..."
-                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKey((prev) => ({ ...prev, claude: !prev.claude }))}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-                    >
-                      {showKey.claude ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Model
-                  </label>
-                  <select
-                    value={models.claude}
-                    onChange={(e) => handleModelChange('claude', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {AVAILABLE_MODELS.claude.map((m: { id: string; name: string; description: string }) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} — {m.description}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleTestConnection('claude')}
-                    disabled={testStatus.claude.state === 'testing'}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-                  >
-                    {testStatus.claude.state === 'testing' ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3" />
-                    )}
-                    <span>Test Connection</span>
-                  </button>
-
-                  {keys.claude && (
-                    <button
-                      onClick={() => handleClearKey('claude')}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                    >
-                      Clear Key
-                    </button>
-                  )}
-                </div>
-
-                {testStatus.claude.state === 'success' && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Connection successful</span>
-                  </span>
-                )}
-
-                {testStatus.claude.state === 'error' && (
-                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>{testStatus.claude.message || 'Connection failed'}</span>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* 4. DeepSeek */}
-            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-purple-500/10 text-purple-600 flex items-center justify-center">
-                    <Cpu className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">DeepSeek</h3>
-                    <p className="text-[11px] text-zinc-400">Deep Reasoning & Coding (DeepSeek-V3 / R1)</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enabled.deepseek}
-                      onChange={() => handleToggleEnabled('deepseek')}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
-                    />
-                    <span>Enabled</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    DeepSeek API Key
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showKey.deepseek ? 'text' : 'password'}
-                      value={keys.deepseek}
-                      onChange={(e) => handleKeyChange('deepseek', e.target.value)}
-                      placeholder="sk-..."
-                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKey((prev) => ({ ...prev, deepseek: !prev.deepseek }))}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-                    >
-                      {showKey.deepseek ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Model
-                  </label>
-                  <select
-                    value={models.deepseek}
-                    onChange={(e) => handleModelChange('deepseek', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {AVAILABLE_MODELS.deepseek.map((m: { id: string; name: string; description: string }) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} — {m.description}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleTestConnection('deepseek')}
-                    disabled={testStatus.deepseek.state === 'testing'}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-                  >
-                    {testStatus.deepseek.state === 'testing' ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3" />
-                    )}
-                    <span>Test Connection</span>
-                  </button>
-
-                  {keys.deepseek && (
-                    <button
-                      onClick={() => handleClearKey('deepseek')}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                    >
-                      Clear Key
-                    </button>
-                  )}
-                </div>
-
-                {testStatus.deepseek.state === 'success' && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Connection successful</span>
-                  </span>
-                )}
-
-                {testStatus.deepseek.state === 'error' && (
-                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>{testStatus.deepseek.message || 'Connection failed'}</span>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* 5. Groq */}
-            <div className="p-5 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-4 shadow-xs">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-orange-500/10 text-orange-600 flex items-center justify-center">
-                    <Zap className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-sm text-zinc-900 dark:text-white">Groq</h3>
-                    <p className="text-[11px] text-zinc-400">Ultra-Fast LPU Inference (Llama 3.3 70B & 8B)</p>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={enabled.groq}
-                      onChange={() => handleToggleEnabled('groq')}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 border-zinc-300"
-                    />
-                    <span>Enabled</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Groq API Key
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showKey.groq ? 'text' : 'password'}
-                      value={keys.groq}
-                      onChange={(e) => handleKeyChange('groq', e.target.value)}
-                      placeholder="gsk_..."
-                      className="w-full pl-3 pr-10 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs font-mono text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKey((prev) => ({ ...prev, groq: !prev.groq }))}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-                    >
-                      {showKey.groq ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                    Model
-                  </label>
-                  <select
-                    value={models.groq}
-                    onChange={(e) => handleModelChange('groq', e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-800/50 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    {AVAILABLE_MODELS.groq.map((m: { id: string; name: string; description: string }) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} — {m.description}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleTestConnection('groq')}
-                    disabled={testStatus.groq.state === 'testing'}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 dark:border-zinc-700 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:bg-zinc-50 dark:hover:bg-zinc-800 transition-colors"
-                  >
-                    {testStatus.groq.state === 'testing' ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <RefreshCw className="w-3 h-3" />
-                    )}
-                    <span>Test Connection</span>
-                  </button>
-
-                  {keys.groq && (
-                    <button
-                      onClick={() => handleClearKey('groq')}
-                      className="px-3 py-1.5 rounded-lg text-xs font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                    >
-                      Clear Key
-                    </button>
-                  )}
-                </div>
-
-                {testStatus.groq.state === 'success' && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Connection successful</span>
-                  </span>
-                )}
-
-                {testStatus.groq.state === 'error' && (
-                  <span className="flex items-center gap-1 text-xs text-rose-600 dark:text-rose-400 font-medium">
-                    <XCircle className="w-3.5 h-3.5" />
-                    <span>{testStatus.groq.message || 'Connection failed'}</span>
-                  </span>
-                )}
-              </div>
-            </div>
+              );
+            })}
           </div>
 
-          {/* Dedicated Save Action Bar for Providers */}
+          {/* Save Bar */}
           <div className="p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
                 Save AI Provider Configurations
               </p>
               <p className="text-[11px] text-zinc-500">
-                Save active keys and selected models for OpenAI, Gemini, and Claude
+                Persist selected models and active provider states locally
               </p>
             </div>
 
@@ -942,7 +841,7 @@ CREATE TABLE IF NOT EXISTS public.files (
       {/* ================= TAB 2: PREFERENCES ================= */}
       {activeTab === 'preferences' && (
         <div className="p-6 rounded-2xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 space-y-6">
-          <div className="space-y-4">
+          <div className="space-y-5">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider mb-1.5">
@@ -969,9 +868,45 @@ CREATE TABLE IF NOT EXISTS public.files (
                   className="w-full px-3 py-2 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 text-xs text-zinc-900 dark:text-zinc-100"
                 >
                   <option value="openai">OpenAI (Structured Consensus)</option>
-                  <option value="gemini">Gemini (Alternative Perspectives)</option>
-                  <option value="claude">Claude (Critical Edge-Case Weighting)</option>
+                  <option value="gemini">Google Gemini (Alternative Perspectives)</option>
+                  <option value="claude">Anthropic Claude (Critical Edge-Case Weighting)</option>
+                  <option value="groq">Groq (High-Throughput Synthesis)</option>
+                  <option value="deepseek">DeepSeek (Algorithmic Reasoning)</option>
                 </select>
+              </div>
+            </div>
+
+            {/* REQUEST DELAY (RATE LIMIT CONTROL) */}
+            <div className="p-4 rounded-xl bg-zinc-50 dark:bg-zinc-800/50 border border-zinc-200 dark:border-zinc-700 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                  <label className="text-xs font-bold text-zinc-700 dark:text-zinc-300 uppercase tracking-wider">
+                    Request Delay Between Provider Calls
+                  </label>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">
+                  {requestDelay}s
+                </span>
+              </div>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">
+                Minimum pause enforced between consecutive requests to the same provider. Different providers run concurrently in parallel. If using free-tier keys (e.g. Google Gemini 15 RPM), increase this delay to 2.0s - 3.0s to avoid HTTP 429 quota errors.
+              </p>
+              <div className="pt-2 flex items-center gap-3">
+                <input
+                  type="range"
+                  min="0.5"
+                  max="5.0"
+                  step="0.5"
+                  value={requestDelay}
+                  onChange={(e) => setRequestDelay(parseFloat(e.target.value))}
+                  className="w-full accent-indigo-600 cursor-pointer"
+                />
+              </div>
+              <div className="flex justify-between text-[10px] text-zinc-400 font-mono">
+                <span>0.5s (Fast / Tier 2+)</span>
+                <span>1.5s (Standard Default)</span>
+                <span>5.0s (Strict Free Tier)</span>
               </div>
             </div>
 
@@ -984,7 +919,7 @@ CREATE TABLE IF NOT EXISTS public.files (
                   <button
                     key={t}
                     onClick={() => onThemeChange(t)}
-                    className={`py-2 px-3 rounded-xl border text-xs capitalize transition-all ${
+                    className={`py-2 px-3 rounded-xl border text-xs capitalize transition-all cursor-pointer ${
                       theme === t
                         ? 'border-indigo-600 bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 font-semibold'
                         : 'border-zinc-200 dark:border-zinc-800 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-50 dark:hover:bg-zinc-800'
@@ -1009,7 +944,7 @@ CREATE TABLE IF NOT EXISTS public.files (
 
             <button
               onClick={handleSavePreferences}
-              className="px-4 py-2 rounded-xl bg-zinc-900 dark:bg-white text-white dark:text-zinc-950 font-semibold text-xs hover:bg-zinc-800 transition-colors shadow-xs"
+              className="px-4 py-2 rounded-xl bg-zinc-900 dark:bg-white text-white dark:text-zinc-950 font-semibold text-xs hover:bg-zinc-800 transition-colors shadow-xs cursor-pointer"
             >
               Save Preferences
             </button>
@@ -1053,7 +988,7 @@ CREATE TABLE IF NOT EXISTS public.files (
                   setCopiedSql(true);
                   setTimeout(() => setCopiedSql(false), 2000);
                 }}
-                className="flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                className="flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
               >
                 {copiedSql ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
                 <span>{copiedSql ? 'Copied' : 'Copy SQL Schema'}</span>

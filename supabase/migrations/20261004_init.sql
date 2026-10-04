@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS public.user_settings (
   default_rounds INT DEFAULT 3 CHECK (default_rounds BETWEEN 1 AND 3),
   default_moderator TEXT DEFAULT 'openai',
   theme TEXT DEFAULT 'system' CHECK (theme IN ('light', 'dark', 'system')),
+  request_delay_seconds NUMERIC DEFAULT 1.5,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
