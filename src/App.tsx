@@ -2,21 +2,17 @@ import React, { useEffect, useState } from 'react';
 import { UserProfile } from '@/types';
 import { authService } from '@/services/auth/authService';
 import { settingsService } from '@/services/settings/settingsService';
-import { Navbar } from '@/components/layout/Navbar';
 import { Login } from '@/pages/Login';
-import { Dashboard } from '@/pages/Dashboard';
-import { NewDiscussion } from '@/pages/NewDiscussion';
-import { DiscussionView } from '@/pages/Discussion';
-import { HistoryView } from '@/pages/History';
-import { FilesView } from '@/pages/Files';
+import { ModernChatWorkspace } from '@/components/chat/ModernChatWorkspace';
 import { SettingsView } from '@/pages/Settings';
+import { X } from 'lucide-react';
 
 export default function App() {
-  const [user, setUser] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [currentTab, setCurrentTab] = useState<string>('dashboard');
+  const [user, setUser] = useState<UserProfile | null>(() => authService.getCachedUser());
+  const [loading, setLoading] = useState(() => !authService.getCachedUser());
   const [activeDiscussionId, setActiveDiscussionId] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   // Initialize Auth & Theme
   useEffect(() => {
@@ -36,8 +32,21 @@ export default function App() {
       setLoading(false);
     });
 
+    const unsubscribe = authService.onAuthStateChange(async (currentUser) => {
+      if (!mounted) return;
+      setUser(currentUser);
+      if (currentUser) {
+        const settings = await settingsService.getSettings(currentUser.id);
+        if (mounted && settings?.theme) {
+          setTheme(settings.theme);
+        }
+      }
+      setLoading(false);
+    });
+
     return () => {
       mounted = false;
+      unsubscribe();
     };
   }, []);
 
@@ -57,27 +66,13 @@ export default function App() {
 
   const handleLoginSuccess = (loggedInUser: UserProfile) => {
     setUser(loggedInUser);
-    setCurrentTab('dashboard');
+    setActiveDiscussionId(null);
   };
 
   const handleSignOut = async () => {
     await authService.signOut();
     setUser(null);
-    setCurrentTab('dashboard');
-  };
-
-  const handleNavigate = (tab: string, discussionId?: string) => {
-    if (tab === 'discussion' && discussionId) {
-      setActiveDiscussionId(discussionId);
-      setCurrentTab('discussion');
-    } else {
-      setCurrentTab(tab);
-    }
-  };
-
-  const handleDiscussionCreated = (discussionId: string) => {
-    setActiveDiscussionId(discussionId);
-    setCurrentTab('discussion');
+    setActiveDiscussionId(null);
   };
 
   if (loading) {
@@ -88,62 +83,51 @@ export default function App() {
     );
   }
 
-  // Protected Routes Check (Requirement #11)
+  // Protected Routes Check
   if (!user) {
     return <Login onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex flex-col font-sans transition-colors">
-      <Navbar
-        currentTab={currentTab}
-        onNavigate={handleNavigate}
+    <div className="h-screen w-screen overflow-hidden bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors relative">
+      {/* Primary Modern AI Chat Workspace (ChatGPT / Claude / Gemini Style) */}
+      <ModernChatWorkspace
         user={user}
+        activeDiscussionId={activeDiscussionId}
+        onSelectDiscussion={(id) => setActiveDiscussionId(id)}
+        onOpenSettings={() => setShowSettingsModal(true)}
         onSignOut={handleSignOut}
         theme={theme}
         onThemeChange={setTheme}
       />
 
-      <main className="flex-1 pb-16">
-        {currentTab === 'dashboard' && (
-          <Dashboard user={user} onNavigate={handleNavigate} />
-        )}
+      {/* Settings & API Key Management Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-3xl w-full max-w-4xl max-h-[90vh] overflow-y-auto shadow-2xl relative">
+            <div className="sticky top-0 z-10 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md px-6 py-4 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
+              <h2 className="text-base font-bold text-zinc-900 dark:text-white">
+                Settings & API Keys
+              </h2>
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="p-1.5 rounded-xl text-zinc-500 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                title="Close settings"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-        {currentTab === 'new-discussion' && (
-          <NewDiscussion
-            user={user}
-            onDiscussionCreated={handleDiscussionCreated}
-            onNavigateToSettings={() => setCurrentTab('settings')}
-          />
-        )}
-
-        {currentTab === 'discussion' && activeDiscussionId && (
-          <DiscussionView
-            discussionId={activeDiscussionId}
-            onNavigateNew={() => setCurrentTab('new-discussion')}
-          />
-        )}
-
-        {currentTab === 'history' && (
-          <HistoryView
-            user={user}
-            onOpenDiscussion={(id: string) => handleNavigate('discussion', id)}
-            onNavigateNew={() => setCurrentTab('new-discussion')}
-          />
-        )}
-
-        {currentTab === 'files' && (
-          <FilesView user={user} />
-        )}
-
-        {currentTab === 'settings' && (
-          <SettingsView
-            user={user}
-            theme={theme}
-            onThemeChange={setTheme}
-          />
-        )}
-      </main>
+            <div className="p-6">
+              <SettingsView
+                user={user}
+                theme={theme}
+                onThemeChange={setTheme}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

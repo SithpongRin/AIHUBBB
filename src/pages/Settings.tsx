@@ -597,6 +597,47 @@ CREATE TABLE IF NOT EXISTS public.files (
               </div>
             </div>
           </div>
+
+          {/* Dedicated Save Action Bar for Providers */}
+          <div className="p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                Save AI Provider Configurations
+              </p>
+              <p className="text-[11px] text-zinc-500">
+                Save active keys and selected models for OpenAI, Gemini, and Claude
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {savedNotice && (
+                <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-semibold">
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Saved successfully</span>
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  Object.entries(keys).forEach(([p, val]) => {
+                    providerKeyStore.setKey(p as ProviderId, val);
+                  });
+                  Object.entries(models).forEach(([p, model]) => {
+                    providerKeyStore.setModel(p as ProviderId, model);
+                  });
+                  Object.entries(enabled).forEach(([p, isEn]) => {
+                    providerKeyStore.setEnabled(p as ProviderId, isEn);
+                  });
+                  setSavedNotice(true);
+                  setTimeout(() => setSavedNotice(false), 2500);
+                }}
+                className="px-5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 dark:bg-white dark:hover:bg-zinc-100 text-white dark:text-zinc-950 font-semibold text-xs transition-all shadow-xs cursor-pointer"
+              >
+                Save API Keys & Models
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
